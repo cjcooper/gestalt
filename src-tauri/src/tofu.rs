@@ -9,7 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::ffi::OsString;
+use crate::shell_env::{EnvMap, ShellEnv};
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -74,14 +75,19 @@ pub struct Runs {
     plans: Mutex<HashMap<u64, SavedPlan>>,
 }
 
-/// Find the `tofu` binary. Apps launched from Finder/Dock get a minimal PATH,
-/// so fall back to common install locations. `GESTALT_TOFU_BIN` overrides.
-fn tofu_bin() -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("GESTALT_TOFU_BIN") {
+/// Look up a variable in the shell env, falling back to our own process env.
+fn env_var(env: &EnvMap, key: &str) -> Option<OsString> {
+    env.get(OsStr::new(key)).cloned().or_else(|| std::env::var_os(key))
+}
+
+/// Find the `tofu` binary on the shell's PATH, then common install locations.
+/// `GESTALT_TOFU_BIN` (in the shell or app env) overrides.
+fn tofu_bin(env: &EnvMap) -> Result<PathBuf, String> {
+    if let Some(p) = env_var(env, "GESTALT_TOFU_BIN") {
         return Ok(PathBuf::from(p));
     }
     let exe = if cfg!(windows) { "tofu.exe" } else { "tofu" };
-    let from_path = std::env::var_os("PATH")
+    let from_path = env_var(env, "PATH")
         .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
         .unwrap_or_default();
     let fallbacks = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from);
@@ -136,6 +142,7 @@ fn pump<R: AsyncRead + Unpin + Send + 'static>(
 fn spawn_run(
     app: &AppHandle,
     runs: &Runs,
+    env: &EnvMap,
     run_id: u64,
     dir: PathBuf,
     args: Vec<OsString>,
@@ -150,10 +157,11 @@ fn spawn_run(
         active.insert(run_id, ActiveRun { dir: dir.clone(), pid: None, interrupted: false, kill: None });
     }
 
-    let spawned = tofu_bin().and_then(|bin| {
+    let spawned = tofu_bin(env).and_then(|bin| {
         Command::new(bin)
             .args(&args)
             .current_dir(&dir)
+            .envs(env)
             .env("TF_IN_AUTOMATION", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -235,6 +243,7 @@ fn next_id(runs: &Runs) -> u64 {
 pub async fn run_tofu(
     app: AppHandle,
     runs: State<'_, Runs>,
+    shell_env: State<'_, ShellEnv>,
     dir: String,
     action: Action,
 ) -> Result<u64, String> {
@@ -242,6 +251,7 @@ pub async fn run_tofu(
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }
+    let env = shell_env.get().await;
     let run_id = next_id(&runs);
     let mut args: Vec<OsString> = Vec::new();
     let kind = match action {
@@ -258,13 +268,19 @@ pub async fn run_tofu(
             RunKind::Plan { file }
         }
     };
-    spawn_run(&app, &runs, run_id, dir, args, kind)?;
+    spawn_run(&app, &runs, &env, run_id, dir, args, kind)?;
     Ok(run_id)
 }
 
 /// Apply the saved plan produced by run `plan_run_id`. Returns the new run id.
 #[tauri::command]
-pub async fn apply_plan(app: AppHandle, runs: State<'_, Runs>, plan_run_id: u64) -> Result<u64, String> {
+pub async fn apply_plan(
+    app: AppHandle,
+    runs: State<'_, Runs>,
+    shell_env: State<'_, ShellEnv>,
+    plan_run_id: u64,
+) -> Result<u64, String> {
+    let env = shell_env.get().await;
     // Take the plan out up front so it can't be applied twice.
     let plan = runs
         .plans
@@ -276,7 +292,7 @@ pub async fn apply_plan(app: AppHandle, runs: State<'_, Runs>, plan_run_id: u64)
     let run_id = next_id(&runs);
     let args = vec!["apply".into(), "-input=false".into(), "-no-color".into(), plan.file.clone().into_os_string()];
     let kind = RunKind::Apply { file: plan.file.clone() };
-    if let Err(e) = spawn_run(&app, &runs, run_id, plan.dir.clone(), args, kind) {
+    if let Err(e) = spawn_run(&app, &runs, &env, run_id, plan.dir.clone(), args, kind) {
         runs.plans.lock().unwrap().insert(plan_run_id, plan);
         return Err(e);
     }
@@ -316,10 +332,14 @@ pub fn cancel_tofu(runs: State<'_, Runs>, run_id: u64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn tofu_version() -> Result<String, String> {
-    let out = std::process::Command::new(tofu_bin()?)
+pub async fn tofu_version(shell_env: State<'_, ShellEnv>) -> Result<String, String> {
+    let env = shell_env.get().await;
+    let out = Command::new(tofu_bin(&env)?)
         .arg("version")
+        .envs(env.iter())
+        .stdin(Stdio::null())
         .output()
+        .await
         .map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string())
 }

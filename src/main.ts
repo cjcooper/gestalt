@@ -365,14 +365,54 @@ document.addEventListener("contextmenu", (ev) => {
 
 // ---- Startup -----------------------------------------------------------------
 
-invoke<string>("tofu_version")
-  .then((v) => ($("tofu-version").textContent = v))
-  .catch((e) => {
-    const el = $("tofu-version");
-    el.textContent = "tofu not found";
-    el.title = String(e);
-    el.classList.add("error");
-  });
+interface EnvStatus {
+  shell: string | null;
+  varCount: number;
+  error: string | null;
+}
+
+function renderEnvStatus(s: EnvStatus) {
+  const el = $("env-status");
+  el.classList.toggle("error", !!s.error);
+  if (s.error) {
+    el.textContent = "shell env not loaded";
+    el.title = `${s.error}\n\ntofu will run with the app's default environment.`;
+  } else {
+    el.textContent = `env: ${s.shell ? baseName(s.shell) : "shell"} (${s.varCount} vars)`;
+    el.title = `tofu runs with the environment from your login shell (${s.shell}).\nClick "Reload env" after changing your shell config.`;
+  }
+}
+
+function refreshTofuVersion() {
+  const el = $("tofu-version");
+  invoke<string>("tofu_version")
+    .then((v) => {
+      el.textContent = v;
+      el.title = "";
+      el.classList.remove("error");
+    })
+    .catch((e) => {
+      el.textContent = "tofu not found";
+      el.title = String(e);
+      el.classList.add("error");
+    });
+}
+
+$("env-reload").onclick = async () => {
+  const btn = $<HTMLButtonElement>("env-reload");
+  btn.disabled = true;
+  $("env-status").textContent = "loading env…";
+  try {
+    renderEnvStatus(await invoke<EnvStatus>("reload_shell_env"));
+    refreshTofuVersion();
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("env-status").textContent = "loading env…";
+invoke<EnvStatus>("shell_env_status").then(renderEnvStatus).catch(console.error);
+refreshTofuVersion();
 
 try {
   const last = localStorage.getItem(LAST_ROOT_KEY);
