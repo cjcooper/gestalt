@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gestalt</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <header class="toolbar">
+      <button id="open-root">Open folder…</button>
+      <span id="root-path" class="muted">No folder open</span>
+      <span class="spacer"></span>
+      <span id="tofu-version" class="muted"></span>
+    </header>
+
+    <div class="layout">
+      <nav class="sidebar">
+        <ul id="tree" class="tree" role="tree"></ul>
+        <p id="tree-hint" class="muted hint">Open a folder, then right-click a folder to run tofu.</p>
+      </nav>
+
+      <section class="runs">
+        <div class="run-tabs" id="run-tabs"></div>
+        <div class="run-header" id="run-header" hidden>
+          <span id="run-title"></span>
+          <span id="run-status" class="status"></span>
+          <span class="spacer"></span>
+          <button id="run-cancel">Cancel</button>
+          <button id="run-close">Close</button>
+        </div>
+        <pre id="run-output" class="output"></pre>
+      </section>
+    </div>
+  </body>
+</html>
