@@ -12,11 +12,13 @@ interface DirEntry {
   path: string;
   hasChildren: boolean;
   isModule: boolean;
+  hasEnvFile: boolean;
 }
 
 interface OutputEvent {
   runId: number;
-  stream: "stdout" | "stderr";
+  /** "gestalt" lines are the app's own notes, e.g. which .gestalt.env files applied. */
+  stream: "stdout" | "stderr" | "gestalt";
   line: string;
 }
 
@@ -167,9 +169,9 @@ function renderTabs() {
 }
 
 function lineNode(l: Run["lines"][number]): Node {
-  if (l.stream === "stderr") {
+  if (l.stream !== "stdout") {
     const s = document.createElement("span");
-    s.className = "stderr";
+    s.className = l.stream;
     s.textContent = l.line + "\n";
     return s;
   }
@@ -292,6 +294,13 @@ function makeNode(entry: DirEntry, depth: number): HTMLLIElement {
     badge.textContent = "tf";
     row.append(badge);
   }
+  if (entry.hasEnvFile) {
+    const badge = document.createElement("span");
+    badge.className = "badge env";
+    badge.textContent = "env";
+    badge.title = ".gestalt.env in this folder applies here and to all subfolders";
+    row.append(badge);
+  }
 
   const children = document.createElement("ul");
   children.className = "tree";
@@ -342,11 +351,9 @@ async function loadRoot(path: string) {
   $("root-path").textContent = path;
   $("tree-hint").hidden = true;
 
-  const [kids, isModule] = await Promise.all([
-    invoke<DirEntry[]>("list_dir", { path }),
-    invoke<boolean>("is_module", { path }),
-  ]);
-  const root = makeNode({ name: baseName(path), path, hasChildren: kids.length > 0, isModule }, 0);
+  // open_root also tells the backend where .gestalt.env lookup stops.
+  const entry = await invoke<DirEntry>("open_root", { path });
+  const root = makeNode(entry, 0);
   $("tree").replaceChildren(root);
   // Expand the root immediately.
   (root.querySelector(".tree-row") as HTMLElement).click();

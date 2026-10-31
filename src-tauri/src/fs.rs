@@ -12,6 +12,8 @@ pub struct DirEntry {
     pub has_children: bool,
     /// Folder contains `*.tf` / `*.tofu` files, i.e. it's a root module tofu can run in.
     pub is_module: bool,
+    /// Folder has its own `.gestalt.env`.
+    pub has_env_file: bool,
 }
 
 /// Directories never worth showing in the tree.
@@ -44,19 +46,22 @@ pub fn is_module(dir: &Path) -> bool {
         })
 }
 
+pub fn entry(path: &Path) -> DirEntry {
+    DirEntry {
+        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string()),
+        path: path.to_string_lossy().into_owned(),
+        has_children: subdirs(path).next().is_some(),
+        is_module: is_module(path),
+        has_env_file: path.join(crate::env_file::FILE_NAME).is_file(),
+    }
+}
+
 /// List the immediate subfolders of `path`, sorted by name.
 pub fn list_dir(path: &Path) -> Result<Vec<DirEntry>, String> {
     if !path.is_dir() {
         return Err(format!("{} is not a directory", path.display()));
     }
-    let mut out: Vec<DirEntry> = subdirs(path)
-        .map(|(name, p)| DirEntry {
-            has_children: subdirs(&p).next().is_some(),
-            is_module: is_module(&p),
-            path: p.to_string_lossy().into_owned(),
-            name,
-        })
-        .collect();
+    let mut out: Vec<DirEntry> = subdirs(path).map(|(_, p)| entry(&p)).collect();
     out.sort_by_key(|e| e.name.to_lowercase());
     Ok(out)
 }

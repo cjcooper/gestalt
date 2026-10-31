@@ -9,9 +9,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::env_file;
 use crate::shell_env::{EnvMap, ShellEnv};
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +66,12 @@ struct ActiveRun {
 struct SavedPlan {
     dir: PathBuf,
     file: PathBuf,
+}
+
+/// The folder opened in the UI. `.gestalt.env` lookup never goes above it.
+#[derive(Default)]
+pub struct Workspace {
+    pub root: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -142,7 +149,7 @@ fn pump<R: AsyncRead + Unpin + Send + 'static>(
 fn spawn_run(
     app: &AppHandle,
     runs: &Runs,
-    env: &EnvMap,
+    env: ResolvedEnv,
     run_id: u64,
     dir: PathBuf,
     args: Vec<OsString>,
@@ -157,11 +164,13 @@ fn spawn_run(
         active.insert(run_id, ActiveRun { dir: dir.clone(), pid: None, interrupted: false, kill: None });
     }
 
-    let spawned = tofu_bin(env).and_then(|bin| {
+    let spawned = tofu_bin(&env.vars).and_then(|bin| {
         Command::new(bin)
             .args(&args)
             .current_dir(&dir)
-            .envs(env)
+            // `env` is the complete environment, so `unset` in .gestalt.env works.
+            .env_clear()
+            .envs(&env.vars)
             .env("TF_IN_AUTOMATION", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -182,6 +191,11 @@ fn spawn_run(
     if let Some(run) = runs.active.lock().unwrap().get_mut(&run_id) {
         run.pid = child.id();
         run.kill = Some(kill_tx);
+    }
+
+    // Emitted before the output pumps start, so these lead the run's output.
+    for line in env.notes {
+        let _ = app.emit("tofu://output", OutputEvent { run_id, stream: "gestalt", line });
     }
 
     let out = pump(app.clone(), run_id, "stdout", child.stdout.take().unwrap());
@@ -234,6 +248,51 @@ fn spawn_run(
     Ok(())
 }
 
+/// A run's complete environment plus notes on where it came from.
+struct ResolvedEnv {
+    vars: EnvMap,
+    notes: Vec<String>,
+}
+
+/// The environment tofu runs with in `dir`, lowest to highest precedence:
+/// app process env, login-shell env, then each `.gestalt.env` from the
+/// workspace root down to `dir`. Also returns human-readable notes describing
+/// which files applied (variable names only, never values).
+async fn effective_env(app: &AppHandle, dir: &Path) -> Result<ResolvedEnv, String> {
+    let shell = app.state::<ShellEnv>().get().await;
+    let mut env: EnvMap = std::env::vars_os().collect();
+    env.extend(shell.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+    // Canonicalize both so symlinked paths (e.g. /tmp -> /private/tmp) compare.
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let root = app.state::<Workspace>().root.lock().unwrap().as_deref().map(canon);
+    let dir = canon(dir);
+
+    let mut notes = Vec::new();
+    for file in env_file::chain(root.as_deref(), &dir) {
+        let shown = root
+            .as_deref()
+            .and_then(|r| file.strip_prefix(r).ok())
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        let content = std::fs::read_to_string(&file).map_err(|e| format!("{shown}: {e}"))?;
+        let effect = env_file::apply(&content, &mut env).map_err(|e| format!("{shown}: {e}"))?;
+        let mut parts = Vec::new();
+        if !effect.set.is_empty() {
+            parts.push(format!("sets {}", effect.set.join(", ")));
+        }
+        if !effect.unset.is_empty() {
+            parts.push(format!("unsets {}", effect.unset.join(", ")));
+        }
+        if parts.is_empty() {
+            parts.push("no variables".into());
+        }
+        notes.push(format!("[gestalt] {shown}: {}", parts.join("; ")));
+    }
+    Ok(ResolvedEnv { vars: env, notes })
+}
+
 fn next_id(runs: &Runs) -> u64 {
     runs.next_id.fetch_add(1, Ordering::Relaxed) + 1
 }
@@ -243,7 +302,6 @@ fn next_id(runs: &Runs) -> u64 {
 pub async fn run_tofu(
     app: AppHandle,
     runs: State<'_, Runs>,
-    shell_env: State<'_, ShellEnv>,
     dir: String,
     action: Action,
 ) -> Result<u64, String> {
@@ -251,7 +309,7 @@ pub async fn run_tofu(
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }
-    let env = shell_env.get().await;
+    let env = effective_env(&app, &dir).await?;
     let run_id = next_id(&runs);
     let mut args: Vec<OsString> = Vec::new();
     let kind = match action {
@@ -268,7 +326,7 @@ pub async fn run_tofu(
             RunKind::Plan { file }
         }
     };
-    spawn_run(&app, &runs, &env, run_id, dir, args, kind)?;
+    spawn_run(&app, &runs, env, run_id, dir, args, kind)?;
     Ok(run_id)
 }
 
@@ -277,11 +335,18 @@ pub async fn run_tofu(
 pub async fn apply_plan(
     app: AppHandle,
     runs: State<'_, Runs>,
-    shell_env: State<'_, ShellEnv>,
     plan_run_id: u64,
 ) -> Result<u64, String> {
-    let env = shell_env.get().await;
-    // Take the plan out up front so it can't be applied twice.
+    let dir = runs
+        .plans
+        .lock()
+        .unwrap()
+        .get(&plan_run_id)
+        .map(|p| p.dir.clone())
+        .ok_or("That plan is no longer available. Run a new plan.")?;
+    // Re-read .gestalt.env so apply gets current (e.g. refreshed) credentials.
+    let env = effective_env(&app, &dir).await?;
+    // Take the plan out before spawning so it can't be applied twice.
     let plan = runs
         .plans
         .lock()
@@ -292,7 +357,7 @@ pub async fn apply_plan(
     let run_id = next_id(&runs);
     let args = vec!["apply".into(), "-input=false".into(), "-no-color".into(), plan.file.clone().into_os_string()];
     let kind = RunKind::Apply { file: plan.file.clone() };
-    if let Err(e) = spawn_run(&app, &runs, &env, run_id, plan.dir.clone(), args, kind) {
+    if let Err(e) = spawn_run(&app, &runs, env, run_id, plan.dir.clone(), args, kind) {
         runs.plans.lock().unwrap().insert(plan_run_id, plan);
         return Err(e);
     }

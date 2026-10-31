@@ -145,6 +145,10 @@ button[hidden] {
 .tree-row.module .label {
   font-weight: 600;
 }
+.badge.env {
+  color: var(--ok);
+  border-color: var(--ok);
+}
 .badge {
   font-size: 10px;
   padding: 0 4px;
@@ -234,4 +238,7 @@ button[hidden] {
 }
 .output .stderr {
   color: var(--bad);
+}
+.output .gestalt {
+  color: var(--accent);
 }
