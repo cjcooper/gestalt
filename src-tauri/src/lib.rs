@@ -18,10 +18,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(tofu::Runs::default())
+        .setup(|app| {
+            tofu::clear_stale_plans(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_dir,
             is_module,
             tofu::run_tofu,
+            tofu::apply_plan,
+            tofu::discard_plan,
             tofu::cancel_tofu,
             tofu::tofu_version,
         ])

@@ -5,7 +5,7 @@ import { ask, message, open } from "@tauri-apps/plugin-dialog";
 
 // ---- Backend types ---------------------------------------------------------
 
-type Action = "init" | "plan" | "apply";
+type RunKind = "init" | "plan" | "apply";
 
 interface DirEntry {
   name: string;
@@ -23,7 +23,10 @@ interface OutputEvent {
 interface ExitEvent {
   runId: number;
   code: number | null;
+  success: boolean;
   cancelled: boolean;
+  /** Plan runs only: a saved plan with changes is ready to apply. */
+  hasChanges: boolean | null;
   error: string | null;
 }
 
@@ -31,18 +34,26 @@ interface ExitEvent {
 
 type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
+/** Lifecycle of a plan run's saved plan file. */
+type PlanState = "none" | "ready" | "applied" | "discarded";
+
 interface Run {
   id: number;
   dir: string;
-  action: Action;
+  kind: RunKind;
   status: RunStatus;
   lines: { stream: string; line: string }[];
   exit?: ExitEvent;
+  planState: PlanState;
+  /** Plan run started from "tofu apply…": prompt to apply when it finishes. */
+  applyWhenReady?: boolean;
+  /** Apply runs: the plan run they applied. */
+  fromPlan?: number;
 }
 
 const runs = new Map<number, Run>();
 let selectedRunId: number | null = null;
-// Output/exit events can arrive before `run_tofu` resolves with the id.
+// Output/exit events can arrive before the invoke resolves with the run id.
 const early = new Map<number, { lines: Run["lines"]; exit?: ExitEvent }>();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -61,51 +72,93 @@ function baseName(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 }
 
-async function startRun(dir: string, action: Action) {
-  if (action === "apply") {
-    const ok = await ask(`Run "tofu apply -auto-approve" in\n${dir}?\n\nThis will change real infrastructure.`, {
-      title: "Confirm apply",
-      kind: "warning",
-      okLabel: "Apply",
-      cancelLabel: "Cancel",
-    });
-    if (!ok) return;
+/** The "Plan: 1 to add, 0 to change, 0 to destroy." line, if tofu printed one. */
+function planSummary(run: Run): string | undefined {
+  for (let i = run.lines.length - 1; i >= 0; i--) {
+    const l = run.lines[i].line.trim();
+    if (/^Plan: \d+ to /.test(l)) return l;
   }
+  return undefined;
+}
 
+function registerRun(run: Run) {
+  const pending = early.get(run.id);
+  early.delete(run.id);
+  if (pending) run.lines.push(...pending.lines);
+  runs.set(run.id, run);
+  selectRun(run.id);
+  if (pending?.exit) handleExit(run, pending.exit);
+}
+
+async function startRun(dir: string, kind: "init" | "plan", opts: { applyWhenReady?: boolean } = {}) {
   let id: number;
   try {
-    id = await invoke<number>("run_tofu", { dir, action });
+    id = await invoke<number>("run_tofu", { dir, action: kind });
   } catch (e) {
     await message(String(e), { title: "Could not start tofu", kind: "error" });
     return;
   }
-
-  const run: Run = { id, dir, action, status: "running", lines: [] };
-  const pending = early.get(id);
-  if (pending) {
-    run.lines.push(...pending.lines);
-    early.delete(id);
-  }
-  runs.set(id, run);
-  if (pending?.exit) applyExit(run, pending.exit);
-  selectRun(id);
+  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ...opts });
 }
 
-function applyExit(run: Run, e: ExitEvent) {
+async function confirmAndApply(plan: Run) {
+  if (plan.planState !== "ready") return;
+  const summary = planSummary(plan) ?? "The plan has changes.";
+  const ok = await ask(`Apply this plan to\n${plan.dir}?\n\n${summary}\n\nThis will change real infrastructure.`, {
+    title: "Apply plan",
+    kind: "warning",
+    okLabel: "Apply",
+    cancelLabel: "Cancel",
+  });
+  // Re-check: the tab may have been closed while the dialog was open.
+  if (!ok || plan.planState !== "ready") return;
+
+  let id: number;
+  try {
+    id = await invoke<number>("apply_plan", { planRunId: plan.id });
+  } catch (e) {
+    await message(String(e), { title: "Could not apply plan", kind: "error" });
+    return;
+  }
+  plan.planState = "applied";
+  registerRun({ id, dir: plan.dir, kind: "apply", status: "running", lines: [], planState: "none", fromPlan: plan.id });
+}
+
+function handleExit(run: Run, e: ExitEvent) {
   run.exit = e;
-  run.status = e.cancelled ? "cancelled" : e.code === 0 ? "succeeded" : "failed";
+  run.status = e.cancelled ? "cancelled" : e.success ? "succeeded" : "failed";
   if (e.error) run.lines.push({ stream: "stderr", line: e.error });
+  if (run.kind === "plan" && e.hasChanges) run.planState = "ready";
+
+  if (run.id === selectedRunId) selectRun(run.id);
+  else renderTabs();
+
+  if (run.applyWhenReady && run.planState === "ready") {
+    selectRun(run.id);
+    void confirmAndApply(run);
+  }
 }
 
 // ---- Run rendering ---------------------------------------------------------
+
+function statusText(run: Run): string {
+  if (run.status === "running") return "running…";
+  if (run.kind === "plan" && run.status === "succeeded") {
+    if (!run.exit?.hasChanges) return "no changes";
+    const s = planSummary(run) ?? "changes pending";
+    return run.planState === "applied" ? `${s} (applied)` : run.planState === "ready" ? s : `${s} (discarded)`;
+  }
+  return run.exit?.code != null && run.status === "failed" ? `failed (exit ${run.exit.code})` : run.status;
+}
 
 function renderTabs() {
   const tabs = $("run-tabs");
   tabs.replaceChildren(
     ...[...runs.values()].map((r) => {
       const b = document.createElement("button");
-      b.className = `run-tab ${r.status}` + (r.id === selectedRunId ? " selected" : "");
-      b.textContent = `${r.action} · ${relName(r.dir)}`;
+      b.className =
+        `run-tab ${r.status}` + (r.planState === "ready" ? " plan-ready" : "") + (r.id === selectedRunId ? " selected" : "");
+      b.textContent = `${r.kind} · ${relName(r.dir)}`;
       b.title = r.dir;
       b.onclick = () => selectRun(r.id);
       return b;
@@ -127,11 +180,12 @@ function renderHeader() {
   const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
   $("run-header").hidden = !run;
   if (!run) return;
-  $("run-title").textContent = `tofu ${run.action} — ${run.dir}`;
+  const from = run.fromPlan != null ? ` (from plan #${run.fromPlan})` : "";
+  $("run-title").textContent = `tofu ${run.kind}${from} — ${run.dir}`;
   const status = $("run-status");
   status.className = `status ${run.status}`;
-  status.textContent =
-    run.status === "running" ? "running…" : run.exit?.code != null ? `${run.status} (exit ${run.exit.code})` : run.status;
+  status.textContent = statusText(run);
+  $<HTMLButtonElement>("run-apply").hidden = run.planState !== "ready";
   $<HTMLButtonElement>("run-cancel").hidden = run.status !== "running";
   $<HTMLButtonElement>("run-close").hidden = run.status === "running";
 }
@@ -172,18 +226,26 @@ listen<ExitEvent>("tofu://exit", ({ payload }) => {
     early.set(payload.runId, e);
     return;
   }
-  applyExit(run, payload);
-  if (run.id === selectedRunId) selectRun(run.id);
-  else renderTabs();
+  handleExit(run, payload);
 });
+
+$("run-apply").onclick = () => {
+  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
+  if (run) void confirmAndApply(run);
+};
 
 $("run-cancel").onclick = () => {
   if (selectedRunId != null) invoke("cancel_tofu", { runId: selectedRunId }).catch(console.error);
 };
 
 $("run-close").onclick = () => {
-  if (selectedRunId == null) return;
-  runs.delete(selectedRunId);
+  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
+  if (!run) return;
+  if (run.planState === "ready") {
+    run.planState = "discarded";
+    invoke("discard_plan", { planRunId: run.id }).catch(console.error);
+  }
+  runs.delete(run.id);
   const remaining = [...runs.keys()];
   selectRun(remaining.length ? remaining[remaining.length - 1] : null);
 };
@@ -193,14 +255,14 @@ $("run-close").onclick = () => {
 let currentRoot: string | null = null;
 
 async function showContextMenu(dir: string, isModule: boolean) {
-  const item = (action: Action, text: string) =>
-    MenuItem.new({ text, enabled: isModule, action: () => void startRun(dir, action) });
+  const item = (text: string, action: () => void) => MenuItem.new({ text, enabled: isModule, action });
   const menu = await Menu.new({
     items: [
-      await item("plan", "tofu plan"),
-      await item("apply", "tofu apply…"),
+      await item("tofu plan", () => void startRun(dir, "plan")),
+      // Plans first, then asks to apply that exact saved plan.
+      await item("tofu apply…", () => void startRun(dir, "plan", { applyWhenReady: true })),
       await PredefinedMenuItem.new({ item: "Separator" }),
-      await item("init", "tofu init"),
+      await item("tofu init", () => void startRun(dir, "init")),
     ],
   });
   await menu.popup();

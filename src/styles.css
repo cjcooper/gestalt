@@ -61,6 +61,14 @@ button {
 button:hover {
   border-color: var(--accent);
 }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button[hidden] {
+  display: none;
+}
 
 .muted {
   color: var(--muted);
@@ -179,6 +187,9 @@ button:hover {
 }
 .run-tab.cancelled {
   border-left-color: var(--muted);
+}
+.run-tab.plan-ready {
+  border-left-color: var(--accent);
 }
 
 .run-header {
