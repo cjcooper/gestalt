@@ -270,12 +270,25 @@ async function showContextMenu(dir: string, isModule: boolean) {
   await menu.popup();
 }
 
-function makeNode(entry: DirEntry, depth: number): HTMLLIElement {
+/** Folder paths currently expanded; survives refreshes. */
+const expanded = new Set<string>();
+let selectedPath: string | null = null;
+/** Bumped on every (re)build so a slow, superseded build doesn't win. */
+let treeGeneration = 0;
+
+function selectRow(row: HTMLElement, path: string) {
+  document.querySelectorAll(".tree-row.selected").forEach((el) => el.classList.remove("selected"));
+  row.classList.add("selected");
+  selectedPath = path;
+}
+
+/** Build a tree node, eagerly loading children of folders in `expanded`. */
+async function buildNode(entry: DirEntry, depth: number): Promise<HTMLLIElement> {
   const li = document.createElement("li");
   li.setAttribute("role", "treeitem");
 
   const row = document.createElement("div");
-  row.className = "tree-row" + (entry.isModule ? " module" : "");
+  row.className = "tree-row" + (entry.isModule ? " module" : "") + (entry.path === selectedPath ? " selected" : "");
   row.style.paddingLeft = `${depth * 14 + 6}px`;
   row.title = entry.path;
 
@@ -307,38 +320,74 @@ function makeNode(entry: DirEntry, depth: number): HTMLLIElement {
   children.hidden = true;
   let loaded = false;
 
-  const toggle = async () => {
+  const loadChildren = async () => {
+    const kids = await invoke<DirEntry[]>("list_dir", { path: entry.path });
+    children.replaceChildren(...(await Promise.all(kids.map((k) => buildNode(k, depth + 1)))));
+    loaded = true;
+  };
+  const setOpen = (open: boolean) => {
+    children.hidden = !open;
+    caret.textContent = open ? "▾" : "▸";
+    if (open) expanded.add(entry.path);
+    else expanded.delete(entry.path);
+  };
+
+  row.onclick = async () => {
+    selectRow(row, entry.path);
     if (!entry.hasChildren) return;
-    if (!loaded) {
-      loaded = true;
+    const opening = children.hidden !== false;
+    if (opening && !loaded) {
       try {
-        const kids = await invoke<DirEntry[]>("list_dir", { path: entry.path });
-        children.replaceChildren(...kids.map((k) => makeNode(k, depth + 1)));
+        await loadChildren();
       } catch (e) {
-        loaded = false;
         console.error(e);
         return;
       }
     }
-    children.hidden = !children.hidden;
-    caret.textContent = children.hidden ? "▸" : "▾";
-  };
-
-  row.onclick = () => {
-    document.querySelectorAll(".tree-row.selected").forEach((el) => el.classList.remove("selected"));
-    row.classList.add("selected");
-    void toggle();
+    setOpen(opening);
   };
   row.oncontextmenu = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    document.querySelectorAll(".tree-row.selected").forEach((el) => el.classList.remove("selected"));
-    row.classList.add("selected");
+    selectRow(row, entry.path);
     void showContextMenu(entry.path, entry.isModule);
   };
 
+  if (entry.hasChildren && expanded.has(entry.path)) {
+    try {
+      await loadChildren();
+      setOpen(true);
+    } catch {
+      expanded.delete(entry.path); // folder vanished or became unreadable
+    }
+  }
+
   li.append(row, children);
   return li;
+}
+
+/** (Re)build the whole tree from disk, keeping expansion and selection. */
+async function renderTree() {
+  if (!currentRoot) return;
+  const gen = ++treeGeneration;
+  const btn = $<HTMLButtonElement>("refresh-tree");
+  btn.disabled = true;
+  try {
+    // open_root also tells the backend where .gestalt.env lookup stops.
+    const entry = await invoke<DirEntry>("open_root", { path: currentRoot });
+    const root = await buildNode(entry, 0);
+    if (gen !== treeGeneration) return;
+    $("tree").replaceChildren(root);
+    $("tree-hint").hidden = true;
+  } catch (e) {
+    if (gen !== treeGeneration) return;
+    $("tree").replaceChildren();
+    const hint = $("tree-hint");
+    hint.textContent = `Could not open ${currentRoot}: ${e}`;
+    hint.hidden = false;
+  } finally {
+    if (gen === treeGeneration) btn.disabled = false;
+  }
 }
 
 async function loadRoot(path: string) {
@@ -349,16 +398,22 @@ async function loadRoot(path: string) {
     /* storage unavailable */
   }
   $("root-path").textContent = path;
-  $("tree-hint").hidden = true;
-
-  // open_root also tells the backend where .gestalt.env lookup stops.
-  const entry = await invoke<DirEntry>("open_root", { path });
-  const root = makeNode(entry, 0);
-  $("tree").replaceChildren(root);
-  // Expand the root immediately.
-  (root.querySelector(".tree-row") as HTMLElement).click();
+  expanded.clear();
+  expanded.add(path); // start with the root expanded
+  selectedPath = null;
+  await renderTree();
   renderTabs();
 }
+
+$("refresh-tree").onclick = () => void renderTree();
+
+// ⌘R / Ctrl+R / F5 would reload the webview and lose all runs; refresh the tree instead.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "F5" || ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "r")) {
+    ev.preventDefault();
+    void renderTree();
+  }
+});
 
 $("open-root").onclick = async () => {
   const picked = await open({ directory: true, multiple: false, defaultPath: currentRoot ?? undefined });
@@ -423,7 +478,7 @@ refreshTofuVersion();
 
 try {
   const last = localStorage.getItem(LAST_ROOT_KEY);
-  if (last) loadRoot(last).catch(() => ($("tree-hint").hidden = false));
+  if (last) void loadRoot(last);
 } catch {
   /* storage unavailable */
 }
