@@ -398,6 +398,7 @@ async function loadRoot(path: string) {
     /* storage unavailable */
   }
   $("root-path").textContent = path;
+  $("root-path").title = "";
   expanded.clear();
   expanded.add(path); // start with the root expanded
   selectedPath = null;
@@ -476,9 +477,24 @@ $("env-status").textContent = "loading env…";
 invoke<EnvStatus>("shell_env_status").then(renderEnvStatus).catch(console.error);
 refreshTofuVersion();
 
-try {
-  const last = localStorage.getItem(LAST_ROOT_KEY);
-  if (last) void loadRoot(last);
-} catch {
-  /* storage unavailable */
+/** Startup folder: command line / GESTALT_ROOT if set, else the last one opened. */
+async function openInitialRoot() {
+  const configured = await invoke<{ path: string; source: string } | null>("initial_root").catch((e) => {
+    console.error(e);
+    return null;
+  });
+  if (configured) {
+    await loadRoot(configured.path);
+    $("root-path").title = `Opened from ${configured.source}`;
+    return;
+  }
+  let last: string | null = null;
+  try {
+    last = localStorage.getItem(LAST_ROOT_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  if (last) await loadRoot(last);
 }
+
+void openInitialRoot();

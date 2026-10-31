@@ -17,6 +17,53 @@ async fn reload_shell_env(env: State<'_, ShellEnv>) -> Result<EnvStatus, String>
     Ok(env.reload().await)
 }
 
+#[derive(serde::Serialize)]
+struct InitialRoot {
+    path: String,
+    /// Where it came from, shown to the user.
+    source: &'static str,
+}
+
+/// Folder to open at startup, if one is configured: a directory passed on the
+/// command line, else `GESTALT_ROOT` from the app env or the login shell.
+/// Returns `None` to let the UI fall back to the last opened folder.
+#[tauri::command]
+async fn initial_root(shell_env: State<'_, ShellEnv>) -> Result<Option<InitialRoot>, String> {
+    let expand = |p: std::ffi::OsString| {
+        let p = std::path::PathBuf::from(p);
+        match (p.strip_prefix("~"), std::env::var_os("HOME")) {
+            (Ok(rest), Some(home)) => Path::new(&home).join(rest),
+            _ => p,
+        }
+    };
+    let usable = |p: std::path::PathBuf| p.canonicalize().ok().filter(|p| p.is_dir());
+
+    // macOS may pass non-path args (e.g. -psn_...) when launched from Finder.
+    let from_args = std::env::args_os().skip(1).map(expand).find_map(usable);
+    let from_env = || {
+        std::env::var_os("GESTALT_ROOT")
+            .filter(|v| !v.is_empty())
+            .map(expand)
+            .and_then(usable)
+    };
+    let found = match from_args {
+        Some(p) => Some((p, "command line")),
+        None => match from_env() {
+            Some(p) => Some((p, "GESTALT_ROOT")),
+            None => shell_env
+                .get()
+                .await
+                .get(std::ffi::OsStr::new("GESTALT_ROOT"))
+                .filter(|v| !v.is_empty())
+                .cloned()
+                .map(expand)
+                .and_then(usable)
+                .map(|p| (p, "GESTALT_ROOT (login shell)")),
+        },
+    };
+    Ok(found.map(|(p, source)| InitialRoot { path: p.to_string_lossy().into_owned(), source }))
+}
+
 #[tauri::command]
 fn list_dir(path: String) -> Result<Vec<fs::DirEntry>, String> {
     fs::list_dir(Path::new(&path))
@@ -47,6 +94,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir,
             open_root,
+            initial_root,
             shell_env_status,
             reload_shell_env,
             tofu::run_tofu,
