@@ -10,8 +10,12 @@
 
   <body>
     <header class="toolbar">
-      <button id="open-root">Open folder…</button>
-      <button id="refresh-tree" title="Refresh folder tree (⌘R)" disabled>Refresh</button>
+      <button id="open-root" class="primary with-icon" title="Open folder (⌘O)">
+        <span class="icon" data-icon="folderPlus"></span>Open folder…
+      </button>
+      <button id="refresh-tree" class="with-icon" title="Refresh folder tree (⌘R)" disabled>
+        <span class="icon" data-icon="refresh"></span>Refresh
+      </button>
       <span id="root-path" class="muted">No folder open</span>
       <span class="spacer"></span>
       <span id="env-status" class="muted"></span>
@@ -19,10 +23,24 @@
       <span id="tofu-version" class="muted"></span>
     </header>
 
-    <div class="layout">
+    <main id="welcome" class="welcome" hidden>
+      <div class="welcome-card">
+        <span class="welcome-icon" data-icon="folderOpen"></span>
+        <h1>Open an infrastructure folder</h1>
+        <p class="muted">
+          Pick the root of your OpenTofu repo. Right-click any folder in the tree to plan or apply it.
+        </p>
+        <button id="welcome-open" class="primary big with-icon">
+          <span class="icon" data-icon="folderPlus"></span>Open folder…
+        </button>
+        <p class="muted shortcut">or press ⌘O</p>
+        <p id="welcome-error" class="error" hidden></p>
+      </div>
+    </main>
+
+    <div id="workspace" class="layout" hidden>
       <nav class="sidebar">
         <ul id="tree" class="tree" role="tree"></ul>
-        <p id="tree-hint" class="muted hint">Open a folder, then right-click a folder to run tofu.</p>
       </nav>
 
       <section class="runs">

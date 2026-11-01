@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import { fileIcon, fileKind, icons } from "./icons";
 
 // ---- Backend types ---------------------------------------------------------
 
@@ -10,6 +11,7 @@ type RunKind = "init" | "plan" | "apply";
 interface DirEntry {
   name: string;
   path: string;
+  isDir: boolean;
   hasChildren: boolean;
   isModule: boolean;
   hasEnvFile: boolean;
@@ -282,13 +284,48 @@ function selectRow(row: HTMLElement, path: string) {
   selectedPath = path;
 }
 
+/** A file row. Right-clicking it offers the run menu for its folder. */
+function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLIElement {
+  const li = document.createElement("li");
+  li.setAttribute("role", "treeitem");
+  const kind = fileKind(entry.name);
+
+  const row = document.createElement("div");
+  row.className = `tree-row file file-${kind}` + (entry.path === selectedPath ? " selected" : "");
+  row.style.paddingLeft = `${depth * 14 + 6}px`;
+  row.title = entry.path;
+
+  const caret = document.createElement("span");
+  caret.className = "caret";
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.innerHTML = fileIcon(kind);
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = entry.name;
+  row.append(caret, icon, label);
+
+  row.onclick = () => selectRow(row, entry.path);
+  row.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    selectRow(row, entry.path);
+    void showContextMenu(parent.path, parent.isModule);
+  };
+
+  li.append(row);
+  return li;
+}
+
 /** Build a tree node, eagerly loading children of folders in `expanded`. */
-async function buildNode(entry: DirEntry, depth: number): Promise<HTMLLIElement> {
+async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Promise<HTMLLIElement> {
+  if (!entry.isDir && parent) return buildFileNode(entry, depth, parent);
+
   const li = document.createElement("li");
   li.setAttribute("role", "treeitem");
 
   const row = document.createElement("div");
-  row.className = "tree-row" + (entry.isModule ? " module" : "") + (entry.path === selectedPath ? " selected" : "");
+  row.className = "tree-row folder" + (entry.isModule ? " module" : "") + (entry.path === selectedPath ? " selected" : "");
   row.style.paddingLeft = `${depth * 14 + 6}px`;
   row.title = entry.path;
 
@@ -296,11 +333,15 @@ async function buildNode(entry: DirEntry, depth: number): Promise<HTMLLIElement>
   caret.className = "caret";
   caret.textContent = entry.hasChildren ? "▸" : "";
 
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.innerHTML = icons.folder;
+
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;
 
-  row.append(caret, label);
+  row.append(caret, icon, label);
   if (entry.isModule) {
     const badge = document.createElement("span");
     badge.className = "badge";
@@ -322,12 +363,13 @@ async function buildNode(entry: DirEntry, depth: number): Promise<HTMLLIElement>
 
   const loadChildren = async () => {
     const kids = await invoke<DirEntry[]>("list_dir", { path: entry.path });
-    children.replaceChildren(...(await Promise.all(kids.map((k) => buildNode(k, depth + 1)))));
+    children.replaceChildren(...(await Promise.all(kids.map((k) => buildNode(k, depth + 1, entry)))));
     loaded = true;
   };
   const setOpen = (open: boolean) => {
     children.hidden = !open;
     caret.textContent = open ? "▾" : "▸";
+    icon.innerHTML = open ? icons.folderOpen : icons.folder;
     if (open) expanded.add(entry.path);
     else expanded.delete(entry.path);
   };
@@ -378,13 +420,11 @@ async function renderTree() {
     const root = await buildNode(entry, 0);
     if (gen !== treeGeneration) return;
     $("tree").replaceChildren(root);
-    $("tree-hint").hidden = true;
+    showWelcome(false);
   } catch (e) {
     if (gen !== treeGeneration) return;
     $("tree").replaceChildren();
-    const hint = $("tree-hint");
-    hint.textContent = `Could not open ${currentRoot}: ${e}`;
-    hint.hidden = false;
+    showWelcome(true, `Could not open ${currentRoot}: ${e}`);
   } finally {
     if (gen === treeGeneration) btn.disabled = false;
   }
@@ -416,10 +456,35 @@ document.addEventListener("keydown", (ev) => {
   }
 });
 
-$("open-root").onclick = async () => {
-  const picked = await open({ directory: true, multiple: false, defaultPath: currentRoot ?? undefined });
+/** No folder open (or it failed to open): show the welcome panel instead of the workspace. */
+function showWelcome(show: boolean, error?: string) {
+  $("welcome").hidden = !show;
+  $("workspace").hidden = show;
+  const err = $("welcome-error");
+  err.textContent = error ?? "";
+  err.hidden = !error;
+}
+
+async function pickRoot() {
+  const picked = await open({
+    directory: true,
+    multiple: false,
+    title: "Open infrastructure folder",
+    defaultPath: currentRoot ?? undefined,
+  });
   if (typeof picked === "string") await loadRoot(picked);
-};
+}
+
+$("open-root").onclick = () => void pickRoot();
+$("welcome-open").onclick = () => void pickRoot();
+
+// ⌘O / Ctrl+O opens a folder.
+document.addEventListener("keydown", (ev) => {
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "o") {
+    ev.preventDefault();
+    void pickRoot();
+  }
+});
 
 // Suppress the webview's default context menu everywhere except text inputs.
 document.addEventListener("contextmenu", (ev) => {
@@ -495,6 +560,12 @@ async function openInitialRoot() {
     /* storage unavailable */
   }
   if (last) await loadRoot(last);
+  else showWelcome(true);
 }
+
+// Fill static icon placeholders in the HTML.
+document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
+  el.innerHTML = icons[el.dataset.icon as keyof typeof icons] ?? "";
+});
 
 void openInitialRoot();

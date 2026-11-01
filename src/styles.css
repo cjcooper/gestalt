@@ -10,6 +10,7 @@
   --bad: #b91c1c;
   --warn: #b45309;
   --output-bg: #fafafa;
+  --folder: #c08a1e;
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   font-size: 13px;
@@ -30,6 +31,7 @@
     --bad: #f87171;
     --warn: #fbbf24;
     --output-bg: #17181a;
+    --folder: #d8a943;
   }
 }
 
@@ -66,8 +68,72 @@ button.primary {
   border-color: var(--accent);
   color: #fff;
 }
-button[hidden] {
-  display: none;
+[hidden] {
+  display: none !important;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.primary:hover {
+  filter: brightness(1.08);
+}
+button.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+button.big {
+  font-size: 15px;
+  padding: 9px 20px;
+  border-radius: 7px;
+}
+.icon {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.icon svg {
+  display: block;
+}
+
+/* ---- Welcome (no folder open) ---- */
+
+.welcome {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.welcome-card {
+  max-width: 420px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.welcome-card h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 4px 0 0;
+}
+.welcome-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+.welcome-icon {
+  color: var(--accent);
+}
+.welcome-icon svg {
+  width: 56px;
+  height: 56px;
+  stroke-width: 1.4;
+}
+.welcome .shortcut {
+  font-size: 12px;
 }
 
 .muted {
@@ -121,7 +187,7 @@ button[hidden] {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 2px 8px;
   cursor: default;
   user-select: none;
@@ -144,6 +210,28 @@ button[hidden] {
 }
 .tree-row.module .label {
   font-weight: 600;
+}
+.tree-row .icon {
+  color: var(--muted);
+}
+.tree-row.folder .icon {
+  color: var(--folder);
+}
+.tree-row.module .icon {
+  color: var(--accent);
+}
+.tree-row.file-tofu .icon {
+  color: var(--accent);
+}
+.tree-row.file-vars .icon {
+  color: var(--warn);
+}
+.tree-row.file-env .icon {
+  color: var(--ok);
+}
+.tree-row.file .label {
+  color: var(--fg);
+  opacity: 0.85;
 }
 .badge.env {
   color: var(--ok);
