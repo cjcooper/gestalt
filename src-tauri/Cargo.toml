@@ -20,6 +20,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt-multi-thread", "time"] }
+hcl-rs = "0.20.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

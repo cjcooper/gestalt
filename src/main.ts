@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
-import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import { Menu, MenuItem } from "@tauri-apps/api/menu";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { fileIcon, fileKind, icons } from "./icons";
+import { openImportDialog, type ImportRequest } from "./importDialog";
 
 // ---- Backend types ---------------------------------------------------------
 
-type RunKind = "init" | "plan" | "apply";
+type RunKind = "plan" | "apply" | "import";
 
 interface DirEntry {
   name: string;
@@ -32,6 +33,8 @@ interface ExitEvent {
   /** Plan runs only: a saved plan with changes is ready to apply. */
   hasChanges: boolean | null;
   error: string | null;
+  /** Whether the requested command itself ran (vs. failing during setup). */
+  started: boolean;
 }
 
 // ---- Run state ---------------------------------------------------------------
@@ -94,15 +97,30 @@ function registerRun(run: Run) {
   if (pending?.exit) handleExit(run, pending.exit);
 }
 
-async function startRun(dir: string, kind: "init" | "plan", opts: { applyWhenReady?: boolean } = {}) {
+/**
+ * Start a backend run and give it a tab. The backend reports everything,
+ * including failures to start, as output/exit events, so it all shows in the
+ * run's pane. Only a failed invoke itself (shouldn't happen) is handled here.
+ */
+async function startRun(dir: string, kind: RunKind, command: string, args: Record<string, unknown>, extra: Partial<Run> = {}) {
   let id: number;
   try {
-    id = await invoke<number>("run_tofu", { dir, action: kind });
+    id = await invoke<number>(command, args);
   } catch (e) {
-    await message(String(e), { title: "Could not start tofu", kind: "error" });
-    return;
+    id = -Date.now(); // local-only id for a run that never reached the backend
+    early.set(id, {
+      lines: [],
+      exit: { runId: id, code: null, success: false, cancelled: false, hasChanges: null, error: String(e), started: false },
+    });
   }
-  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ...opts });
+  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ...extra });
+}
+
+const startPlan = (dir: string, applyWhenReady = false) => startRun(dir, "plan", "run_plan", { dir }, { applyWhenReady });
+
+async function startImport(dir: string) {
+  const request: ImportRequest | null = await openImportDialog(dir, relName(dir));
+  if (request) await startRun(dir, "import", "run_import", { dir, request });
 }
 
 async function confirmAndApply(plan: Run) {
@@ -117,15 +135,9 @@ async function confirmAndApply(plan: Run) {
   // Re-check: the tab may have been closed while the dialog was open.
   if (!ok || plan.planState !== "ready") return;
 
-  let id: number;
-  try {
-    id = await invoke<number>("apply_plan", { planRunId: plan.id });
-  } catch (e) {
-    await message(String(e), { title: "Could not apply plan", kind: "error" });
-    return;
-  }
   plan.planState = "applied";
-  registerRun({ id, dir: plan.dir, kind: "apply", status: "running", lines: [], planState: "none", fromPlan: plan.id });
+  renderHeader();
+  await startRun(plan.dir, "apply", "apply_plan", { planRunId: plan.id }, { fromPlan: plan.id });
 }
 
 function handleExit(run: Run, e: ExitEvent) {
@@ -133,6 +145,11 @@ function handleExit(run: Run, e: ExitEvent) {
   run.status = e.cancelled ? "cancelled" : e.success ? "succeeded" : "failed";
   if (e.error) run.lines.push({ stream: "stderr", line: e.error });
   if (run.kind === "plan" && e.hasChanges) run.planState = "ready";
+  // An apply that never started (folder busy, env error...) leaves its plan applicable.
+  if (run.kind === "apply" && !e.started && run.fromPlan != null) {
+    const plan = runs.get(run.fromPlan);
+    if (plan?.planState === "applied") plan.planState = "ready";
+  }
 
   if (run.id === selectedRunId) selectRun(run.id);
   else renderTabs();
@@ -262,11 +279,10 @@ async function showContextMenu(dir: string, isModule: boolean) {
   const item = (text: string, action: () => void) => MenuItem.new({ text, enabled: isModule, action });
   const menu = await Menu.new({
     items: [
-      await item("tofu plan", () => void startRun(dir, "plan")),
+      await item("Import…", () => void startImport(dir)),
+      await item("Plan", () => void startPlan(dir)),
       // Plans first, then asks to apply that exact saved plan.
-      await item("tofu apply…", () => void startRun(dir, "plan", { applyWhenReady: true })),
-      await PredefinedMenuItem.new({ item: "Separator" }),
-      await item("tofu init", () => void startRun(dir, "init")),
+      await item("Apply…", () => void startPlan(dir, true)),
     ],
   });
   await menu.popup();

@@ -330,3 +330,146 @@ button.big {
 .output .gestalt {
   color: var(--accent);
 }
+
+/* ---- Modal dialogs ---- */
+
+dialog.modal {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  box-shadow: 0 20px 50px rgb(0 0 0 / 0.3);
+}
+dialog.modal::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+dialog.modal form {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 50px);
+}
+.modal-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.modal-header code {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-body {
+  padding: 4px 18px 14px;
+  overflow-y: auto;
+}
+.modal-footer {
+  display: flex;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+.modal section {
+  margin-top: 14px;
+}
+.modal h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.modal input:not([type="checkbox"]),
+.modal select {
+  font: inherit;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.modal input:focus,
+.modal select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.modal input.unresolved {
+  border-color: var(--bad);
+}
+.modal .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.modal .field > label {
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.modal .req {
+  color: var(--bad);
+}
+.modal .hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.modal .grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  column-gap: 14px;
+}
+.modal .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: normal;
+  font-family: inherit;
+}
+.var-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 38%) 1fr;
+  align-items: center;
+  gap: 4px 10px;
+  margin-bottom: 8px;
+}
+.var-row .var-desc {
+  grid-column: 2;
+}
+.var-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.var-name code {
+  font-size: 12px;
+}
+.tag {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+.notice {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
