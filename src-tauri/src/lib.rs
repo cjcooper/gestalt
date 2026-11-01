@@ -1,6 +1,7 @@
 mod env_edit;
 mod env_file;
 mod fs;
+mod git;
 mod module_info;
 mod shell_env;
 mod tofu;
@@ -103,6 +104,7 @@ pub fn run() {
             env_edit::env_file_validate,
             env_edit::env_file_save,
             env_edit::env_file_delete,
+            git::git_log,
             tofu::run_plan,
             tofu::run_import,
             tofu::module_info,

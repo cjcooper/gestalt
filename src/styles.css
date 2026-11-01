@@ -169,12 +169,161 @@ button.big {
 /* ---- Tree ---- */
 
 .sidebar {
-  width: 300px;
-  min-width: 180px;
-  resize: horizontal;
+  width: 320px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.side-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.side-tabs button {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.side-tabs button:hover {
+  color: var(--fg);
+}
+.side-tabs button.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.side-panel {
+  flex: 1;
   overflow: auto;
-  border-right: 1px solid var(--border);
   padding: 6px 0;
+}
+
+/* ---- Splitter ---- */
+
+.splitter {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  z-index: 1;
+  cursor: col-resize;
+  position: relative;
+}
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  background: var(--border);
+}
+.splitter:hover::after,
+.splitter:focus-visible::after,
+body.resizing .splitter::after {
+  inset: 0 1px;
+  background: var(--accent);
+}
+.splitter:focus-visible {
+  outline: none;
+}
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ---- Commits ---- */
+
+.commits-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 8px;
+  font-weight: 600;
+}
+.commits-branch .icon {
+  color: var(--accent);
+}
+.commits-status {
+  padding: 0 12px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.commit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.commit {
+  display: flex;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  cursor: default;
+}
+.commit:hover {
+  background: var(--bg-alt);
+}
+.commit.selected {
+  background: var(--selected);
+}
+.commit > .icon {
+  color: var(--muted);
+  margin-top: 1px;
+}
+.commit.merge > .icon {
+  color: var(--accent);
+}
+.commit-body {
+  min-width: 0;
+  flex: 1;
+}
+.commit .subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit .meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit .meta code {
+  font-size: 11px;
+}
+.refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+.ref {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ref.head {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.ref.tag {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.ref.local {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.load-more {
+  display: block;
+  margin: 8px auto;
 }
 .hint {
   padding: 0 12px;

@@ -13,7 +13,7 @@
       <button id="open-root" class="primary with-icon" title="Open folder (⌘O)">
         <span class="icon" data-icon="folderPlus"></span>Open folder…
       </button>
-      <button id="refresh-tree" class="with-icon" title="Refresh folder tree (⌘R)" disabled>
+      <button id="refresh-tree" class="with-icon" title="Refresh files and commits (⌘R)" disabled>
         <span class="icon" data-icon="refresh"></span>Refresh
       </button>
       <span id="root-path" class="muted">No folder open</span>
@@ -39,9 +39,30 @@
     </main>
 
     <div id="workspace" class="layout" hidden>
-      <nav class="sidebar">
-        <ul id="tree" class="tree" role="tree"></ul>
+      <nav class="sidebar" id="sidebar">
+        <div class="side-tabs" role="tablist">
+          <button role="tab" data-tab="files">Files</button>
+          <button role="tab" data-tab="commits">Commits</button>
+        </div>
+        <div class="side-panel" data-panel="files" role="tabpanel">
+          <ul id="tree" class="tree" role="tree"></ul>
+        </div>
+        <div class="side-panel" data-panel="commits" role="tabpanel" hidden>
+          <div class="commits-branch" id="commits-branch"></div>
+          <p class="commits-status muted" id="commits-status" hidden></p>
+          <ul class="commit-list" id="commit-list"></ul>
+          <button id="commits-more" class="load-more" hidden>Load more</button>
+        </div>
       </nav>
+      <div
+        class="splitter"
+        id="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize side pane"
+        tabindex="0"
+        title="Drag to resize · double-click to reset"
+      ></div>
 
       <section class="runs">
         <div class="run-tabs" id="run-tabs"></div>

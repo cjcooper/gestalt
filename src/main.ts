@@ -5,6 +5,7 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
+import { initSidebar, refreshCommits, resetCommits } from "./sidebar";
 
 // ---- Backend types ---------------------------------------------------------
 
@@ -471,16 +472,22 @@ async function loadRoot(path: string) {
   expanded.add(path); // start with the root expanded
   selectedPath = null;
   await renderTree();
+  resetCommits();
   renderTabs();
 }
 
-$("refresh-tree").onclick = () => void renderTree();
+function refreshAll() {
+  void renderTree();
+  refreshCommits();
+}
 
-// ⌘R / Ctrl+R / F5 would reload the webview and lose all runs; refresh the tree instead.
+$("refresh-tree").onclick = refreshAll;
+
+// ⌘R / Ctrl+R / F5 would reload the webview and lose all runs; refresh instead.
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "F5" || ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "r")) {
     ev.preventDefault();
-    void renderTree();
+    refreshAll();
   }
 });
 
@@ -596,4 +603,5 @@ document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
   el.innerHTML = icons[el.dataset.icon as keyof typeof icons] ?? "";
 });
 
+initSidebar();
 void openInitialRoot();
