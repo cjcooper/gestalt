@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Menu, MenuItem } from "@tauri-apps/api/menu";
+import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { fileIcon, fileKind, icons } from "./icons";
+import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
 
 // ---- Backend types ---------------------------------------------------------
@@ -275,6 +276,10 @@ $("run-close").onclick = () => {
 
 let currentRoot: string | null = null;
 
+async function editEnv(dir: string) {
+  if (await openEnvEditor(dir)) await renderTree();
+}
+
 async function showContextMenu(dir: string, isModule: boolean) {
   const item = (text: string, action: () => void) => MenuItem.new({ text, enabled: isModule, action });
   const menu = await Menu.new({
@@ -283,6 +288,9 @@ async function showContextMenu(dir: string, isModule: boolean) {
       await item("Plan", () => void startPlan(dir)),
       // Plans first, then asks to apply that exact saved plan.
       await item("Apply…", () => void startPlan(dir, true)),
+      await PredefinedMenuItem.new({ item: "Separator" }),
+      // Any folder: parent folders hold shared settings for the modules below.
+      await MenuItem.new({ text: "Edit .gestalt.env…", action: () => void editEnv(dir) }),
     ],
   });
   await menu.popup();
@@ -322,6 +330,10 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   row.append(caret, icon, label);
 
   row.onclick = () => selectRow(row, entry.path);
+  if (kind === "env") {
+    row.title = "Double-click to edit";
+    row.ondblclick = () => void editEnv(parent.path);
+  }
   row.oncontextmenu = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();

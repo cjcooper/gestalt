@@ -473,3 +473,112 @@ dialog.modal form {
   font-size: 12px;
   white-space: pre-wrap;
 }
+
+/* ---- .gestalt.env editor ---- */
+
+button.danger {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: transparent;
+}
+dialog.env-editor {
+  width: min(980px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 48px));
+}
+.modal-frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.editor-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.editor-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 12px 0 12px 18px;
+  gap: 6px;
+}
+.env-editor textarea {
+  flex: 1;
+  resize: none;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--output-bg);
+  color: var(--fg);
+  tab-size: 2;
+}
+.env-editor textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.editor-status {
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.editor-status.ok {
+  color: var(--ok);
+}
+.editor-status.error {
+  color: var(--bad);
+}
+.env-editor .inherited {
+  width: 340px;
+  flex: none;
+  padding: 12px 18px;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  margin-left: 18px;
+}
+.env-editor .inherited h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.inherited-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.inherited-row .name {
+  font-weight: 600;
+}
+.inherited-row .value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.inherited-row .source {
+  font-size: 11px;
+  color: var(--muted);
+}
+.inherited-row.overridden .name {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.inherited-row.overridden .source {
+  color: var(--accent);
+}
+.env-editor .hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+@media (max-width: 760px) {
+  .env-editor .inherited {
+    display: none;
+  }
+}

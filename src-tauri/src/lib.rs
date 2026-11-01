@@ -1,3 +1,4 @@
+mod env_edit;
 mod env_file;
 mod fs;
 mod module_info;
@@ -98,6 +99,10 @@ pub fn run() {
             initial_root,
             shell_env_status,
             reload_shell_env,
+            env_edit::env_file_read,
+            env_edit::env_file_validate,
+            env_edit::env_file_save,
+            env_edit::env_file_delete,
             tofu::run_plan,
             tofu::run_import,
             tofu::module_info,
