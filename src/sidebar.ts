@@ -119,6 +119,8 @@ interface GitLog {
   branch: string | null;
   commits: Commit[];
   hasMore: boolean;
+  /** The server has changes for this branch that aren't local (as of the last fetch). */
+  remoteHasChanges: boolean;
   /** Present on the first page only. */
   uncommitted: { fileCount: number; modules: ModuleChange[] } | null;
 }
@@ -283,10 +285,21 @@ async function loadCommits(reset: boolean) {
     const log = await invoke<GitLog>("git_log", { skip: loadedCount, limit });
     if (gen !== commitsGeneration) return;
     commitsLoaded = true;
-    $("commits-branch").replaceChildren(
+    const header: (Node | string)[] = [
       Object.assign(document.createElement("span"), { className: "icon", innerHTML: icons.gitBranch }),
       log.branch ?? "detached HEAD",
-    );
+    ];
+    if (log.remoteHasChanges) {
+      const badge = document.createElement("span");
+      badge.className = "remote-changes";
+      badge.innerHTML = icons.cloudDown;
+      badge.append("Server has changes");
+      badge.title =
+        "The server has changes for this branch that aren't in your local copy (as of the last fetch). " +
+        "They aren't shown here; pull them with your usual git tools.";
+      header.push(badge);
+    }
+    $("commits-branch").replaceChildren(...header);
     const rows = log.commits.map(commitRow);
     if (log.uncommitted) rows.unshift(uncommittedRow(log.uncommitted));
     if (reset) list.replaceChildren(...rows);

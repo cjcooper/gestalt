@@ -45,6 +45,10 @@ pub struct GitLog {
     pub branch: Option<String>,
     pub commits: Vec<Commit>,
     pub has_more: bool,
+    /// The branch's upstream (as of the last fetch by any tool) has commits
+    /// that aren't local. Deliberately just a flag: nothing is fetched and no
+    /// details about the remote commits are exposed.
+    pub remote_has_changes: bool,
     /// Uncommitted work compared with HEAD; only on the first page.
     pub uncommitted: Option<Uncommitted>,
 }
@@ -166,7 +170,16 @@ async fn object_types(dir: &Path, env: &EnvMap, specs: &[String]) -> Result<Vec<
 /// Fill in each commit's module changes: folders of changed files that held
 /// a `main.tf` after the commit (changed) or only before it (changed, or
 /// deleted if the whole folder is gone).
-async fn fill_module_changes(dir: &Path, env: &EnvMap, entries: &mut [(Commit, Vec<String>)]) -> Result<(), String> {
+///
+/// Entries must agree with the local checkout (`top` is the repo's top-level
+/// folder on disk): a changed folder is listed only if it exists locally, and
+/// a deleted one only if it still doesn't.
+async fn fill_module_changes(
+    dir: &Path,
+    top: &Path,
+    env: &EnvMap,
+    entries: &mut [(Commit, Vec<String>)],
+) -> Result<(), String> {
     // Per commit: candidate folders, and the 3 specs queried for each.
     let mut plan: Vec<Vec<String>> = Vec::new();
     let mut specs = Vec::new();
@@ -187,11 +200,18 @@ async fn fill_module_changes(dir: &Path, env: &EnvMap, entries: &mut [(Commit, V
     for ((commit, _), dirs) in entries.iter_mut().zip(plan) {
         for d in dirs {
             let [after, before, folder] = results.next().unwrap() else { unreachable!() };
+            let exists_locally = top.join(&d).is_dir();
             let path = if d.is_empty() { ".".to_string() } else { d };
-            if after == "blob" {
-                commit.modules.push(ModuleChange { path, deleted: false });
+            let change = if after == "blob" {
+                Some(false)
             } else if before == "blob" {
-                commit.modules.push(ModuleChange { path, deleted: folder != "tree" });
+                Some(folder != "tree")
+            } else {
+                None
+            };
+            match change {
+                Some(deleted) if deleted != exists_locally => commit.modules.push(ModuleChange { path, deleted }),
+                _ => {}
             }
         }
     }
@@ -216,6 +236,8 @@ pub async fn first_parent_log(dir: &Path, env: &EnvMap, skip: usize, limit: usiz
         "--name-only",
         "--no-renames",
         "--decorate=short",
+        // Local view only: no remote-tracking branch labels.
+        "--decorate-refs-exclude=refs/remotes/",
         &skip_arg,
         &count_arg,
         FORMAT,
@@ -230,9 +252,29 @@ pub async fn first_parent_log(dir: &Path, env: &EnvMap, skip: usize, limit: usiz
     let mut entries = parse_log(&out);
     let has_more = entries.len() > limit;
     entries.truncate(limit);
-    fill_module_changes(dir, env, &mut entries).await?;
+    let top = toplevel(dir, env).await?;
+    fill_module_changes(dir, &top, env, &mut entries).await?;
     let uncommitted = if skip == 0 { Some(uncommitted_changes(dir, env).await?) } else { None };
-    Ok(GitLog { branch, commits: entries.into_iter().map(|(c, _)| c).collect(), has_more, uncommitted })
+    let remote_has_changes = remote_has_changes(dir, env).await;
+    Ok(GitLog {
+        branch,
+        commits: entries.into_iter().map(|(c, _)| c).collect(),
+        has_more,
+        remote_has_changes,
+        uncommitted,
+    })
+}
+
+async fn toplevel(dir: &Path, env: &EnvMap) -> Result<std::path::PathBuf, String> {
+    Ok(std::path::PathBuf::from(git(dir, env, &["rev-parse", "--show-toplevel"]).await?.trim()))
+}
+
+/// Whether the upstream ref has commits not in HEAD, using only what is
+/// already in the local repo (no fetch). False when there's no upstream.
+async fn remote_has_changes(dir: &Path, env: &EnvMap) -> bool {
+    git(dir, env, &["rev-list", "--max-count=1", "HEAD..@{upstream}"])
+        .await
+        .is_ok_and(|out| !out.trim().is_empty())
 }
 
 /// NUL-separated path list from a git command.
@@ -244,7 +286,7 @@ async fn paths_z(dir: &Path, env: &EnvMap, args: &[&str]) -> Result<Vec<String>,
 /// disk, "before" is HEAD. Runs from the repo top level so paths match the
 /// commit list even when the opened folder is a subfolder of the repo.
 pub async fn uncommitted_changes(dir: &Path, env: &EnvMap) -> Result<Uncommitted, String> {
-    let top = std::path::PathBuf::from(git(dir, env, &["rev-parse", "--show-toplevel"]).await?.trim());
+    let top = toplevel(dir, env).await?;
     let has_head = git(&top, env, &["rev-parse", "--verify", "--quiet", "HEAD"]).await.is_ok();
 
     let mut files: BTreeSet<String> = BTreeSet::new();
@@ -427,8 +469,64 @@ mod tests {
         assert_eq!(mods(by_subject("Merge feature")), [("c".into(), false)]);
         assert_eq!(mods(by_subject("delete folder b")), [("a".into(), false), ("b".into(), true)]);
         assert_eq!(mods(by_subject("edit a")), [("a".into(), false)]);
-        // Root commit: compared with nothing.
-        assert_eq!(mods(by_subject("initial")), [("a".into(), false), ("b".into(), false)]);
+        // Root commit: compared with nothing. b no longer exists locally, so
+        // its earlier change isn't listed.
+        assert_eq!(mods(by_subject("initial")), [("a".into(), false)]);
+    }
+
+    #[tokio::test]
+    async fn folders_must_match_the_local_checkout() {
+        let r = Repo::new("git-local");
+        r.write("x/main.tf", "");
+        r.write("y/main.tf", "");
+        r.commit("add x and y");
+        r.git(&["rm", "-q", "-r", "x"]);
+        r.commit("delete x");
+        r.write("x/main.tf", "back");
+        r.commit("recreate x");
+        r.write("y/main.tf", "edit");
+        r.commit("edit y");
+        // y deleted locally but not committed: its committed changes aren't shown.
+        std::fs::remove_dir_all(r.0.join("y")).unwrap();
+
+        let log = first_parent_log(&r.0, &EnvMap::new(), 0, 50).await.unwrap();
+        let by_subject = |s: &str| log.commits.iter().find(|c| c.subject == s).unwrap();
+        assert_eq!(mods(by_subject("edit y")), []);
+        assert_eq!(mods(by_subject("recreate x")), [("x".into(), false)]);
+        // x exists again locally, so "deleted" would contradict the checkout.
+        assert_eq!(mods(by_subject("delete x")), []);
+        assert_eq!(mods(by_subject("add x and y")), [("x".into(), false)]);
+    }
+
+    #[tokio::test]
+    async fn local_view_with_remote_indicator() {
+        // "server" repo with a commit the local clone hasn't pulled yet.
+        let server = Repo::new("git-server");
+        server.commit("one");
+        let local_dir = std::env::temp_dir().join(format!("gestalt-git-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local_dir);
+        let st = std::process::Command::new("git")
+            .args(["clone", "-q"])
+            .arg(&server.0)
+            .arg(&local_dir)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let local = Repo(local_dir);
+        let env = EnvMap::new();
+
+        let log = first_parent_log(&local.0, &env, 0, 50).await.unwrap();
+        assert!(!log.remote_has_changes);
+        // Remote-tracking labels are not shown.
+        assert!(log.commits[0].refs.iter().all(|r| !r.contains("origin")), "{:?}", log.commits[0].refs);
+
+        server.commit("two");
+        local.git(&["fetch", "-q"]); // done by the user/IDE, never by Gestalt
+        let log = first_parent_log(&local.0, &env, 0, 50).await.unwrap();
+        assert!(log.remote_has_changes);
+        // Still only the local commits.
+        let subjects: Vec<&str> = log.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["one"]);
     }
 
     #[tokio::test]
@@ -483,7 +581,7 @@ async fn print_real_log() {
     let dir = std::env::var("GESTALT_GIT_DIR").expect("set GESTALT_GIT_DIR");
     let start = std::time::Instant::now();
     let log = first_parent_log(Path::new(&dir), &EnvMap::new(), 0, 200).await.unwrap();
-    println!("{} commits in {:?}", log.commits.len(), start.elapsed());
+    println!("{} commits in {:?}, remote_has_changes={}", log.commits.len(), start.elapsed(), log.remote_has_changes);
     for c in log.commits.iter().take(12) {
         println!("{} {}", c.short_hash, c.subject);
         for m in &c.modules {

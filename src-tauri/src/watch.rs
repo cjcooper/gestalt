@@ -4,7 +4,7 @@
 //! Emits `workspace://changed` with a [`Changes`] payload, debounced.
 
 use crate::shell_env::{EnvMap, ShellEnv};
-use notify_debouncer_full::notify::event::{EventKind, ModifyKind};
+use notify_debouncer_full::notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use serde::Serialize;
@@ -23,6 +23,9 @@ pub struct Changes {
     pub worktree: bool,
     /// Files or folders were added, removed or renamed (the tree may differ).
     pub structure: bool,
+    /// Folders were added, removed or renamed (commit rows, which only list
+    /// folders that exist locally, may differ).
+    pub folders: bool,
     /// The git index changed (staging).
     pub git_index: bool,
     /// HEAD or refs changed (commit, checkout, pull, fetch...).
@@ -31,12 +34,13 @@ pub struct Changes {
 
 impl Changes {
     fn any(&self) -> bool {
-        self.worktree || self.structure || self.git_index || self.git_refs
+        self.worktree || self.structure || self.folders || self.git_index || self.git_refs
     }
 
     fn merge(&mut self, o: Changes) {
         self.worktree |= o.worktree;
         self.structure |= o.structure;
+        self.folders |= o.folders;
         self.git_index |= o.git_index;
         self.git_refs |= o.git_refs;
     }
@@ -90,6 +94,13 @@ pub fn classify(path: &Path, kind: &EventKind, loc: &Locations) -> Changes {
     }
     c.worktree = true;
     c.structure = matches!(kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)));
+    // Renames don't say whether a file or folder moved: count them.
+    c.folders = matches!(
+        kind,
+        EventKind::Create(CreateKind::Folder | CreateKind::Any)
+            | EventKind::Remove(RemoveKind::Folder | RemoveKind::Any)
+            | EventKind::Modify(ModifyKind::Name(_))
+    );
     c
 }
 
@@ -166,7 +177,7 @@ pub async fn start(app: AppHandle, root: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify_debouncer_full::notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
+    use notify_debouncer_full::notify::event::{DataChange, RenameMode};
 
     fn loc() -> Locations {
         Locations {
@@ -188,7 +199,8 @@ mod tests {
         assert_eq!(c("/repo/infra/a/main.tf", EDIT), Changes { worktree: true, ..Default::default() });
         assert_eq!(c("/repo/infra/a/new.tf", CREATE), Changes { worktree: true, structure: true, ..Default::default() });
         let gone = EventKind::Remove(RemoveKind::Folder);
-        assert!(c("/repo/infra/b", gone).structure);
+        assert!(c("/repo/infra/b", gone).structure && c("/repo/infra/b", gone).folders);
+        assert!(c("/repo/infra/n", EventKind::Create(CreateKind::Folder)).folders);
         let rename = EventKind::Modify(ModifyKind::Name(RenameMode::Any));
         assert!(c("/repo/infra/b/x.tf", rename).structure);
     }
@@ -275,6 +287,17 @@ mod tests {
             }
         }
         assert!(seen.worktree && seen.structure, "new file not seen: {seen:?}");
+
+        // A new folder: folders flag.
+        std::fs::create_dir(root.join("other")).unwrap();
+        let mut seen = Changes::default();
+        while let Ok(ch) = rx.recv_timeout(Duration::from_millis(1500)) {
+            seen.merge(ch);
+            if seen.folders {
+                break;
+            }
+        }
+        assert!(seen.folders, "new folder not seen: {seen:?}");
 
         drop(d);
         std::fs::remove_dir_all(&base).unwrap();

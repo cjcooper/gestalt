@@ -479,6 +479,7 @@ async function loadRoot(path: string) {
 interface WorkspaceChanges {
   worktree: boolean;
   structure: boolean;
+  folders: boolean;
   gitIndex: boolean;
   gitRefs: boolean;
 }
@@ -488,7 +489,9 @@ interface WorkspaceChanges {
 listen<WorkspaceChanges>("workspace://changed", ({ payload: c }) => {
   if (!currentRoot) return;
   if (c.structure) void renderTree();
-  if (c.gitRefs) void refreshCommits(); // new commits/branch: reload the list (includes uncommitted)
+  // New commits/branch, or folders appearing/disappearing (commit rows only
+  // list folders that match the local checkout): reload the whole list.
+  if (c.gitRefs || c.folders) void refreshCommits();
   else if (c.worktree || c.gitIndex) void refreshUncommitted();
 });
 
