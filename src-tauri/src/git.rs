@@ -3,7 +3,9 @@
 use crate::shell_env::{EnvMap, ShellEnv};
 use crate::tofu::Workspace;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use crate::order::{self, ModuleRefs};
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::path::Path;
 use std::process::Stdio;
 use tauri::State;
@@ -18,6 +20,9 @@ pub struct ModuleChange {
     pub path: String,
     /// The whole folder was removed by this commit.
     pub deleted: bool,
+    /// Folders earlier in the same list whose state this one reads (via
+    /// terraform_remote_state), i.e. why it comes after them.
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -212,7 +217,7 @@ async fn fill_module_changes(
                 None
             };
             match change {
-                Some(deleted) if deleted != exists_locally => commit.modules.push(ModuleChange { path, deleted }),
+                Some(deleted) if deleted != exists_locally => commit.modules.push(ModuleChange { path, deleted, depends_on: Vec::new() }),
                 _ => {}
             }
         }
@@ -256,6 +261,10 @@ pub async fn first_parent_log(dir: &Path, env: &EnvMap, skip: usize, limit: usiz
     entries.truncate(limit);
     let top = toplevel(dir, env).await?;
     fill_module_changes(dir, &top, env, &mut entries).await?;
+    let lists = entries.iter_mut().map(|(c, _)| std::mem::take(&mut c.modules)).collect();
+    for ((c, _), sorted) in entries.iter_mut().zip(sort_all(&top, lists).await) {
+        c.modules = sorted;
+    }
     let uncommitted = if skip == 0 { Some(uncommitted_changes(dir, env).await?) } else { None };
     let remote_has_changes = remote_has_changes(dir, env).await;
     Ok(GitLog {
@@ -266,6 +275,34 @@ pub async fn first_parent_log(dir: &Path, env: &EnvMap, skip: usize, limit: usiz
         remote_has_changes,
         uncommitted,
     })
+}
+
+/// Put a list of module folders into run order: producers before the
+/// folders that read their state; deleted folders (nothing to run) last.
+fn sort_modules(top: &Path, modules: &mut Vec<ModuleChange>, cache: &mut HashMap<PathBuf, ModuleRefs>) {
+    let (live, deleted): (Vec<_>, Vec<_>) = std::mem::take(modules).into_iter().partition(|m| !m.deleted);
+    let paths: Vec<String> = live.into_iter().map(|m| m.path).collect();
+    for (path, depends_on) in order::order(top, &paths, cache) {
+        modules.push(ModuleChange { path, deleted: false, depends_on });
+    }
+    modules.extend(deleted);
+}
+
+/// Order each list of module changes (parsing HCL is CPU work: off the async runtime).
+async fn sort_all(top: &Path, lists: Vec<Vec<ModuleChange>>) -> Vec<Vec<ModuleChange>> {
+    let top = top.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut cache = HashMap::new();
+        lists
+            .into_iter()
+            .map(|mut l| {
+                sort_modules(&top, &mut l, &mut cache);
+                l
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 async fn toplevel(dir: &Path, env: &EnvMap) -> Result<std::path::PathBuf, String> {
@@ -316,11 +353,12 @@ pub async fn uncommitted_changes(dir: &Path, env: &EnvMap) -> Result<Uncommitted
         let had = before.get(i).is_some_and(|t| t == "blob");
         let path = if d.is_empty() { ".".to_string() } else { d.to_string() };
         if folder.join(MODULE_FILE).is_file() {
-            modules.push(ModuleChange { path, deleted: false });
+            modules.push(ModuleChange { path, deleted: false, depends_on: Vec::new() });
         } else if had {
-            modules.push(ModuleChange { path, deleted: !folder.is_dir() });
+            modules.push(ModuleChange { path, deleted: !folder.is_dir(), depends_on: Vec::new() });
         }
     }
+    let modules = sort_all(&top, vec![modules]).await.pop().unwrap_or_default();
     Ok(Uncommitted { file_count: files.len(), modules })
 }
 
@@ -557,7 +595,36 @@ mod tests {
         let u = uncommitted_changes(&r.0.join("docs"), &EnvMap::new()).await.unwrap();
         assert_eq!(u.file_count, 5);
         let mods: Vec<(String, bool)> = u.modules.iter().map(|m| (m.path.clone(), m.deleted)).collect();
-        assert_eq!(mods, [("a".into(), false), ("b".into(), false), ("c".into(), true), ("d".into(), false)]);
+        // Deleted folders (nothing to run) come last.
+        assert_eq!(mods, [("a".into(), false), ("b".into(), false), ("d".into(), false), ("c".into(), true)]);
+    }
+
+    #[tokio::test]
+    async fn commit_folders_are_in_run_order() {
+        let r = Repo::new("git-order");
+        let module = |dir: &str, key: &str, reads: Option<&str>| {
+            let mut tf = format!("terraform {{\n  backend \"s3\" {{\n    bucket = \"state\"\n    key    = \"{key}\"\n  }}\n}}\n");
+            if let Some(k) = reads {
+                tf += &format!("data \"terraform_remote_state\" \"x\" {{\n  backend = \"s3\"\n  config = {{\n    bucket = \"state\"\n    key    = \"{k}\"\n  }}\n}}\n");
+            }
+            r.write(&format!("{dir}/main.tf"), &tf);
+        };
+        // "app" reads "zone"'s state, so zone runs first despite sorting later.
+        module("app", "app.tfstate", Some("zone.tfstate"));
+        module("zone", "zone.tfstate", None);
+        module("misc", "misc.tfstate", None);
+        r.commit("add all");
+        std::fs::write(r.0.join("app/extra.tf"), "").unwrap();
+        std::fs::write(r.0.join("zone/extra.tf"), "").unwrap();
+
+        let log = first_parent_log(&r.0, &EnvMap::new(), 0, 10).await.unwrap();
+        let order: Vec<&str> = log.commits[0].modules.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(order, ["misc", "zone", "app"]);
+        assert_eq!(log.commits[0].modules[2].depends_on, ["zone"]);
+
+        let u = log.uncommitted.unwrap();
+        let order: Vec<&str> = u.modules.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(order, ["zone", "app"]);
     }
 
     #[tokio::test]
@@ -588,7 +655,8 @@ async fn print_real_log() {
     for c in log.commits.iter().take(12) {
         println!("{} {}", c.short_hash, c.subject);
         for m in &c.modules {
-            println!("    {}{}", m.path, if m.deleted { "  (deleted)" } else { "" });
+            println!("    {}{}{}", m.path, if m.deleted { "  (deleted)" } else { "" },
+                if m.depends_on.is_empty() { String::new() } else { format!("   <- after {}", m.depends_on.join(", ")) });
         }
     }
     let deleted: Vec<_> = log.commits.iter().flat_map(|c| c.modules.iter().filter(|m| m.deleted).map(move |m| (&c.short_hash, &m.path))).collect();

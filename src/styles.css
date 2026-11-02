@@ -817,3 +817,15 @@ dialog.env-editor {
   background: var(--accent);
   color: #fff;
 }
+
+.module-changes .step {
+  flex: none;
+  min-width: 14px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.module-changes .step.has-deps {
+  color: var(--accent);
+  font-weight: 600;
+}

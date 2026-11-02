@@ -3,6 +3,7 @@ mod env_file;
 mod fs;
 mod git;
 mod module_info;
+mod order;
 mod shell_env;
 mod tofu;
 mod watch;

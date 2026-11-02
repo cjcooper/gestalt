@@ -113,6 +113,8 @@ interface Commit {
 interface ModuleChange {
   path: string;
   deleted: boolean;
+  /** Folders earlier in the same list whose state this one reads. */
+  dependsOn: string[];
 }
 
 interface GitLog {
@@ -183,14 +185,26 @@ function localFolder(path: string): string | null {
   return path === "." ? repoRoot : `${repoRoot.replace(/\/$/, "")}/${path}`;
 }
 
-/** Folders holding a main.tf, one full path per line; deleted folders are marked. */
+/**
+ * Folders holding a main.tf, one full path per line, in run order (the
+ * backend puts folders whose state others read first); deleted folders last.
+ */
 function moduleList(modules: ModuleChange[]): HTMLElement {
-  const mods = document.createElement("ul");
+  const mods = document.createElement("ol");
   mods.className = "module-changes";
+  let step = 0;
   for (const m of modules) {
     const item = document.createElement("li");
     item.className = m.deleted ? "deleted" : "";
-    item.title = m.deleted ? `${m.path} — folder deleted` : m.path;
+    item.title = m.deleted
+      ? `${m.path} — folder deleted`
+      : m.dependsOn.length
+        ? `${m.path}\nRun after: ${m.dependsOn.join(", ")} (reads their state)`
+        : m.path;
+    const num = document.createElement("span");
+    num.className = "step" + (m.dependsOn.length ? " has-deps" : "");
+    num.textContent = m.deleted ? "–" : String(++step);
+    item.append(num);
     const path = document.createElement("span");
     path.className = "path";
     path.textContent = m.path;
