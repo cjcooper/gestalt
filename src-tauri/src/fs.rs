@@ -12,7 +12,8 @@ pub struct DirEntry {
     pub is_dir: bool,
     /// Folder has at least one visible entry (drives the expand arrow).
     pub has_children: bool,
-    /// Folder contains `*.tf` / `*.tofu` files, i.e. tofu can run in it.
+    /// Folder contains a `main.tf`: a root module Gestalt runs tofu in
+    /// (same rule as the Commits tab).
     pub is_module: bool,
     /// Folder has its own `.gestalt.env`.
     pub has_env_file: bool,
@@ -39,7 +40,7 @@ fn visible(dir: &Path) -> impl Iterator<Item = (String, std::path::PathBuf, bool
 }
 
 pub fn is_module(dir: &Path) -> bool {
-    visible(dir).any(|(name, _, is_dir)| !is_dir && (name.ends_with(".tf") || name.ends_with(".tofu")))
+    dir.join("main.tf").is_file()
 }
 
 pub fn entry(path: &Path) -> DirEntry {

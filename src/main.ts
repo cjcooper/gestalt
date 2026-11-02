@@ -281,17 +281,23 @@ async function editEnv(dir: string) {
   if (await openEnvEditor(dir)) await renderTree();
 }
 
+/** Folder menu. tofu commands only for folders with a main.tf (isModule). */
 async function showContextMenu(dir: string, isModule: boolean) {
-  const item = (text: string, action: () => void) => MenuItem.new({ text, enabled: isModule, action });
+  const item = (text: string, action: () => void) => MenuItem.new({ text, action });
+  const tofuItems = isModule
+    ? [
+        await item("Import…", () => void startImport(dir)),
+        await item("Plan", () => void startPlan(dir)),
+        // Plans first, then asks to apply that exact saved plan.
+        await item("Apply…", () => void startPlan(dir, true)),
+        await PredefinedMenuItem.new({ item: "Separator" }),
+      ]
+    : [];
   const menu = await Menu.new({
     items: [
-      await item("Import…", () => void startImport(dir)),
-      await item("Plan", () => void startPlan(dir)),
-      // Plans first, then asks to apply that exact saved plan.
-      await item("Apply…", () => void startPlan(dir, true)),
-      await PredefinedMenuItem.new({ item: "Separator" }),
+      ...tofuItems,
       // Any folder: parent folders hold shared settings for the modules below.
-      await MenuItem.new({ text: "Edit .gestalt.env…", action: () => void editEnv(dir) }),
+      await item("Edit .gestalt.env…", () => void editEnv(dir)),
     ],
   });
   await menu.popup();

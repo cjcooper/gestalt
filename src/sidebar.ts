@@ -80,11 +80,15 @@ function initSplitter() {
 // ---- Tabs ----------------------------------------------------------------------
 
 type Tab = "files" | "commits";
-const TAB_KEY = "gestalt.sidebarTab";
+/**
+ * The tab the user wants: Commits by default for each opened folder, then
+ * whatever they click. Kept in memory so refreshes don't move them; shown as
+ * Files while the folder isn't a git repo.
+ */
+let wantedTab: Tab = "commits";
 
-function showTab(tab: Tab, persist = true) {
-  if (tab === "commits" && !repoAvailable) tab = "files";
-  if (persist) store.set(TAB_KEY, tab);
+function showTab(want: Tab) {
+  const tab = want === "commits" && !repoAvailable ? "files" : want;
   document.querySelectorAll<HTMLElement>("[data-tab]").forEach((b) => {
     const on = b.dataset.tab === tab;
     b.classList.toggle("active", on);
@@ -417,13 +421,13 @@ export async function refreshUncommitted() {
 async function updateRepoAvailability() {
   repoAvailable = await invoke<boolean>("git_is_repo").catch(() => false);
   document.querySelector<HTMLElement>('[data-tab="commits"]')!.hidden = !repoAvailable;
-  // Restore the user's preferred tab (without overwriting it when forced to Files).
-  showTab(store.get(TAB_KEY) === "commits" ? "commits" : "files", false);
+  showTab(wantedTab);
 }
 
 /** A different folder was opened: forget the previous repo's list. */
 export async function resetCommits() {
   rootOpen = true;
+  wantedTab = "commits"; // each newly opened folder starts on Commits
   commitsGeneration++;
   commitsLoaded = false;
   selectedCommit = null;
@@ -440,10 +444,13 @@ export function initSidebar(plan: FolderAction, apply: FolderAction) {
   onApply = apply;
   initSplitter();
   document.querySelectorAll<HTMLElement>("[data-tab]").forEach((b) => {
-    b.onclick = () => showTab(b.dataset.tab as Tab);
+    b.onclick = () => {
+      wantedTab = b.dataset.tab as Tab;
+      showTab(wantedTab);
+    };
   });
   $("commits-more").onclick = () => void loadCommits(false);
   // Commits stays hidden until a folder is open and known to be a repo.
   document.querySelector<HTMLElement>('[data-tab="commits"]')!.hidden = true;
-  showTab("files", false);
+  showTab("files");
 }
