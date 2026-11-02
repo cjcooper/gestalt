@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#2b3445"/>
+      <stop offset="1" stop-color="#0d1119"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)"><rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/></g>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <path d="M512.0,320.0 L681.7,418.0 L512.0,516.0 L342.3,418.0 Z" fill="#6fa8ff" stroke="#6fa8ff" stroke-width="34" stroke-linejoin="round"/>
+  <path d="M342.3,418.0 L512.0,516.0 L512.0,712.0 L342.3,614.0 Z" fill="#5985c9" stroke="#5985c9" stroke-width="34" stroke-linejoin="round"/>
+  <path d="M512.0,516.0 L681.7,418.0 L681.7,614.0 L512.0,712.0 Z" fill="#446498" stroke="#446498" stroke-width="34" stroke-linejoin="round"/>
+  <path d="M218.6,578.4 A300,300 0 0 1 712.7,293.1" fill="none" stroke="#ffb21e" stroke-width="52" stroke-linecap="round"/>
+  <path d="M707.5,193.2 L712.7,293.1 L612.9,298.3" fill="none" stroke="#ffb21e" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M805.4,453.6 A300,300 0 0 1 311.3,738.9" fill="none" stroke="#ffb21e" stroke-width="52" stroke-linecap="round"/>
+  <path d="M316.5,838.8 L311.3,738.9 L411.1,733.7" fill="none" stroke="#ffb21e" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
