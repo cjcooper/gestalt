@@ -5,10 +5,11 @@ mod git;
 mod module_info;
 mod shell_env;
 mod tofu;
+mod watch;
 
 use shell_env::{EnvStatus, ShellEnv};
 use std::path::Path;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 async fn shell_env_status(env: State<'_, ShellEnv>) -> Result<EnvStatus, String> {
@@ -74,12 +75,16 @@ fn list_dir(path: String) -> Result<Vec<fs::DirEntry>, String> {
 
 /// Set the workspace root (bounds `.gestalt.env` lookup) and describe it.
 #[tauri::command]
-fn open_root(workspace: State<'_, tofu::Workspace>, path: String) -> Result<fs::DirEntry, String> {
+fn open_root(app: AppHandle, workspace: State<'_, tofu::Workspace>, path: String) -> Result<fs::DirEntry, String> {
     let path = Path::new(&path);
     if !path.is_dir() {
         return Err(format!("{} is not a directory", path.display()));
     }
-    *workspace.root.lock().unwrap() = Some(path.to_path_buf());
+    let previous = workspace.root.lock().unwrap().replace(path.to_path_buf());
+    // Also called on every tree refresh: only (re)start watching for a new root.
+    if previous.as_deref() != Some(path) {
+        tauri::async_runtime::spawn(watch::start(app, path.to_path_buf()));
+    }
     Ok(fs::entry(path))
 }
 
@@ -90,6 +95,7 @@ pub fn run() {
         .manage(tofu::Runs::default())
         .manage(ShellEnv::default())
         .manage(tofu::Workspace::default())
+        .manage(watch::WorkspaceWatcher::default())
         .setup(|app| {
             tofu::clear_stale_plans(app.handle());
             Ok(())
@@ -106,6 +112,7 @@ pub fn run() {
             env_edit::env_file_delete,
             git::git_log,
             git::git_is_repo,
+            git::git_uncommitted,
             tofu::run_plan,
             tofu::run_import,
             tofu::module_info,

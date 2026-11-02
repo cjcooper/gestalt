@@ -291,6 +291,14 @@ pub async fn git_is_repo(workspace: State<'_, Workspace>, shell: State<'_, Shell
     Ok(is_repo(&root, &env).await)
 }
 
+/// Just the uncommitted-changes summary (for refreshing on file changes).
+#[tauri::command]
+pub async fn git_uncommitted(workspace: State<'_, Workspace>, shell: State<'_, ShellEnv>) -> Result<Uncommitted, String> {
+    let root = workspace.root.lock().unwrap().clone().ok_or("No folder is open.")?;
+    let env = shell.get().await;
+    uncommitted_changes(&root, &env).await
+}
+
 #[tauri::command]
 pub async fn git_log(
     workspace: State<'_, Workspace>,

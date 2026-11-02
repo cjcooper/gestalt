@@ -320,6 +320,35 @@ export async function refreshCommits() {
   await updateRepoAvailability();
 }
 
+function commitsVisible(): boolean {
+  return !document.querySelector<HTMLElement>('[data-panel="commits"]')!.hidden;
+}
+
+let uncommittedGeneration = 0;
+
+/** Files changed on disk: update just the pinned "Uncommitted changes" row. */
+export async function refreshUncommitted() {
+  if (!rootOpen || !repoAvailable) return;
+  if (!commitsVisible() || !commitsLoaded) {
+    commitsLoaded = false; // reload fully when the tab is next shown
+    return;
+  }
+  const gen = ++uncommittedGeneration;
+  const listGen = commitsGeneration;
+  try {
+    const u = await invoke<NonNullable<GitLog["uncommitted"]>>("git_uncommitted");
+    // Skip if superseded, or a full reload started meanwhile (it includes this row).
+    if (gen !== uncommittedGeneration || listGen !== commitsGeneration) return;
+    const row = uncommittedRow(u);
+    const list = $("commit-list");
+    const old = list.querySelector(".commit.uncommitted");
+    if (old) old.replaceWith(row);
+    else list.prepend(row);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 /** Show the Commits tab only for git repos; falls back to Files otherwise. */
 async function updateRepoAvailability() {
   repoAvailable = await invoke<boolean>("git_is_repo").catch(() => false);

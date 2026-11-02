@@ -5,7 +5,7 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
-import { initSidebar, refreshCommits, resetCommits } from "./sidebar";
+import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
 
 // ---- Backend types ---------------------------------------------------------
 
@@ -475,6 +475,22 @@ async function loadRoot(path: string) {
   void resetCommits();
   renderTabs();
 }
+
+interface WorkspaceChanges {
+  worktree: boolean;
+  structure: boolean;
+  gitIndex: boolean;
+  gitRefs: boolean;
+}
+
+// The backend watches the open folder and its git metadata (debounced) and
+// says what kind of thing changed; refresh only the affected views.
+listen<WorkspaceChanges>("workspace://changed", ({ payload: c }) => {
+  if (!currentRoot) return;
+  if (c.structure) void renderTree();
+  if (c.gitRefs) void refreshCommits(); // new commits/branch: reload the list (includes uncommitted)
+  else if (c.worktree || c.gitIndex) void refreshUncommitted();
+});
 
 function refreshAll() {
   void renderTree();
