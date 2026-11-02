@@ -178,7 +178,9 @@ function refBadge(ref: string): HTMLElement {
 
 /** Repo top level of the loaded list, for turning module paths into local folders. */
 let repoRoot: string | null = null;
-let onPlan: (dir: string) => void = () => {};
+type FolderAction = (dir: string) => void;
+let onPlan: FolderAction = () => {};
+let onApply: FolderAction = () => {};
 
 function localFolder(path: string): string | null {
   if (!repoRoot) return null;
@@ -217,16 +219,25 @@ function moduleList(modules: ModuleChange[]): HTMLElement {
     } else {
       const dir = localFolder(m.path);
       if (dir) {
-        const plan = document.createElement("button");
-        plan.className = "plan-btn";
-        plan.innerHTML = icons.play;
-        plan.append("Plan");
-        plan.title = `tofu plan in ${dir}`;
-        plan.onclick = (ev) => {
-          ev.stopPropagation(); // don't also select the commit row
-          onPlan(dir);
+        const button = (label: string, icon: string, cls: string, title: string, action: FolderAction) => {
+          const b = document.createElement("button");
+          b.className = `folder-btn ${cls}`;
+          b.innerHTML = icon;
+          b.append(label);
+          b.title = title;
+          b.onclick = (ev) => {
+            ev.stopPropagation(); // don't also select the commit row
+            action(dir);
+          };
+          return b;
         };
-        item.append(plan);
+        const actions = document.createElement("span");
+        actions.className = "folder-actions";
+        actions.append(
+          button("Plan", icons.play, "plan-btn", `tofu plan in ${dir}`, onPlan),
+          button("Apply", icons.check, "apply-btn", `Plan, review, then apply in ${dir}`, onApply),
+        );
+        item.append(actions);
       }
     }
     mods.append(item);
@@ -420,9 +431,13 @@ export async function resetCommits() {
   await updateRepoAvailability();
 }
 
-/** `plan` runs the plan procedure for a local folder (from a commit's folder list). */
-export function initSidebar(plan: (dir: string) => void) {
+/**
+ * `plan` / `apply` run those procedures for a local folder from a commit's
+ * folder list (apply = plan, confirm, apply that saved plan).
+ */
+export function initSidebar(plan: FolderAction, apply: FolderAction) {
   onPlan = plan;
+  onApply = apply;
   initSplitter();
   document.querySelectorAll<HTMLElement>("[data-tab]").forEach((b) => {
     b.onclick = () => showTab(b.dataset.tab as Tab);
