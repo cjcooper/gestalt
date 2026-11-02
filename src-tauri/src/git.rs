@@ -45,6 +45,17 @@ pub struct GitLog {
     pub branch: Option<String>,
     pub commits: Vec<Commit>,
     pub has_more: bool,
+    /// Uncommitted work compared with HEAD; only on the first page.
+    pub uncommitted: Option<Uncommitted>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Uncommitted {
+    /// Changed files (staged, unstaged and untracked; ignored files excluded).
+    pub file_count: usize,
+    /// Module folders among them, same rules as for commits.
+    pub modules: Vec<ModuleChange>,
 }
 
 const FIELD: char = '\x1f';
@@ -220,7 +231,52 @@ pub async fn first_parent_log(dir: &Path, env: &EnvMap, skip: usize, limit: usiz
     let has_more = entries.len() > limit;
     entries.truncate(limit);
     fill_module_changes(dir, env, &mut entries).await?;
-    Ok(GitLog { branch, commits: entries.into_iter().map(|(c, _)| c).collect(), has_more })
+    let uncommitted = if skip == 0 { Some(uncommitted_changes(dir, env).await?) } else { None };
+    Ok(GitLog { branch, commits: entries.into_iter().map(|(c, _)| c).collect(), has_more, uncommitted })
+}
+
+/// NUL-separated path list from a git command.
+async fn paths_z(dir: &Path, env: &EnvMap, args: &[&str]) -> Result<Vec<String>, String> {
+    Ok(git(dir, env, args).await?.split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
+}
+
+/// Module folders with uncommitted changes: "after" is the working tree on
+/// disk, "before" is HEAD. Runs from the repo top level so paths match the
+/// commit list even when the opened folder is a subfolder of the repo.
+pub async fn uncommitted_changes(dir: &Path, env: &EnvMap) -> Result<Uncommitted, String> {
+    let top = std::path::PathBuf::from(git(dir, env, &["rev-parse", "--show-toplevel"]).await?.trim());
+    let has_head = git(&top, env, &["rev-parse", "--verify", "--quiet", "HEAD"]).await.is_ok();
+
+    let mut files: BTreeSet<String> = BTreeSet::new();
+    if has_head {
+        // Staged + unstaged changes against HEAD (deletions included).
+        files.extend(paths_z(&top, env, &["diff", "--name-only", "--no-renames", "-z", "HEAD"]).await?);
+    } else {
+        // No commits yet: everything in the index counts.
+        files.extend(paths_z(&top, env, &["ls-files", "-z", "--cached"]).await?);
+    }
+    files.extend(paths_z(&top, env, &["ls-files", "-z", "--others", "--exclude-standard"]).await?);
+
+    let dirs: BTreeSet<&str> = files.iter().map(|f| parent_dir(f)).collect();
+    let specs: Vec<String> = if has_head {
+        dirs.iter().map(|d| spec("HEAD", d, Some(MODULE_FILE))).collect()
+    } else {
+        Vec::new()
+    };
+    let before = object_types(&top, env, &specs).await?;
+
+    let mut modules = Vec::new();
+    for (i, d) in dirs.iter().enumerate() {
+        let folder = top.join(d);
+        let had = before.get(i).is_some_and(|t| t == "blob");
+        let path = if d.is_empty() { ".".to_string() } else { d.to_string() };
+        if folder.join(MODULE_FILE).is_file() {
+            modules.push(ModuleChange { path, deleted: false });
+        } else if had {
+            modules.push(ModuleChange { path, deleted: !folder.is_dir() });
+        }
+    }
+    Ok(Uncommitted { file_count: files.len(), modules })
 }
 
 async fn is_repo(dir: &Path, env: &EnvMap) -> bool {
@@ -365,6 +421,34 @@ mod tests {
         assert_eq!(mods(by_subject("edit a")), [("a".into(), false)]);
         // Root commit: compared with nothing.
         assert_eq!(mods(by_subject("initial")), [("a".into(), false), ("b".into(), false)]);
+    }
+
+    #[tokio::test]
+    async fn uncommitted_module_changes() {
+        let r = Repo::new("git-uncommitted");
+        r.write(".gitignore", ".terraform/\n");
+        r.write("a/main.tf", "");
+        r.write("b/main.tf", "");
+        r.write("c/main.tf", "");
+        r.write("docs/x.md", "");
+        r.commit("initial");
+
+        let clean = uncommitted_changes(&r.0, &EnvMap::new()).await.unwrap();
+        assert_eq!(clean, Uncommitted { file_count: 0, modules: vec![] });
+
+        r.write("a/main.tf", "edited, unstaged");
+        r.write("b/new.tf", "staged");
+        r.git(&["add", "b/new.tf"]);
+        std::fs::remove_dir_all(r.0.join("c")).unwrap(); // deleted, unstaged
+        r.write("d/main.tf", ""); // new module, untracked
+        r.write("docs/x.md", "edited"); // not a module folder
+        r.write("a/.terraform/providers.txt", ""); // ignored
+
+        // Query from a subfolder: paths are still from the repo root.
+        let u = uncommitted_changes(&r.0.join("docs"), &EnvMap::new()).await.unwrap();
+        assert_eq!(u.file_count, 5);
+        let mods: Vec<(String, bool)> = u.modules.iter().map(|m| (m.path.clone(), m.deleted)).collect();
+        assert_eq!(mods, [("a".into(), false), ("b".into(), false), ("c".into(), true), ("d".into(), false)]);
     }
 
     #[tokio::test]

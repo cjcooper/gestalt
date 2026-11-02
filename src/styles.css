@@ -764,3 +764,14 @@ dialog.env-editor {
   border: 1px solid var(--bad);
   color: var(--bad);
 }
+
+.commit.uncommitted {
+  background: var(--bg-alt);
+  border-top: none;
+}
+.commit.uncommitted .subject {
+  font-weight: 600;
+}
+.commit.uncommitted.dirty > .icon {
+  color: var(--warn);
+}

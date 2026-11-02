@@ -107,13 +107,20 @@ interface Commit {
   subject: string;
   refs: string[];
   /** Folders holding a main.tf that this commit changed (vs. its first parent). */
-  modules: { path: string; deleted: boolean }[];
+  modules: ModuleChange[];
+}
+
+interface ModuleChange {
+  path: string;
+  deleted: boolean;
 }
 
 interface GitLog {
   branch: string | null;
   commits: Commit[];
   hasMore: boolean;
+  /** Present on the first page only. */
+  uncommitted: { fileCount: number; modules: ModuleChange[] } | null;
 }
 
 const PAGE = 200;
@@ -163,6 +170,60 @@ function refBadge(ref: string): HTMLElement {
   return el;
 }
 
+/** Folders holding a main.tf, one full path per line; deleted folders are marked. */
+function moduleList(modules: ModuleChange[]): HTMLElement {
+  const mods = document.createElement("ul");
+  mods.className = "module-changes";
+  for (const m of modules) {
+    const item = document.createElement("li");
+    item.className = m.deleted ? "deleted" : "";
+    item.title = m.deleted ? `${m.path} — folder deleted` : m.path;
+    const path = document.createElement("span");
+    path.className = "path";
+    path.textContent = m.path;
+    item.append(path);
+    if (m.deleted) {
+      const tag = document.createElement("span");
+      tag.className = "deleted-tag";
+      tag.textContent = "deleted";
+      item.append(tag);
+    }
+    mods.append(item);
+  }
+  return mods;
+}
+
+/** Pinned first row: module folders with uncommitted changes. */
+function uncommittedRow(u: NonNullable<GitLog["uncommitted"]>): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "commit uncommitted" + (u.fileCount ? " dirty" : "");
+
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.innerHTML = icons.pencil;
+
+  const subject = document.createElement("div");
+  subject.className = "subject";
+  subject.textContent = "Uncommitted changes";
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent =
+    u.fileCount === 0
+      ? "Working tree clean"
+      : `${u.fileCount} file${u.fileCount === 1 ? "" : "s"} changed` +
+        (u.modules.length ? "" : " · no module folders");
+
+  const body = document.createElement("div");
+  body.className = "commit-body";
+  body.append(subject, meta);
+  if (u.modules.length) body.append(moduleList(u.modules));
+
+  li.title = "Staged, unstaged and untracked changes compared with HEAD (ignored files excluded)";
+  li.append(icon, body);
+  return li;
+}
+
 function commitRow(c: Commit): HTMLLIElement {
   const li = document.createElement("li");
   li.className = "commit" + (c.isMerge ? " merge" : "") + (c.hash === selectedCommit ? " selected" : "");
@@ -193,27 +254,7 @@ function commitRow(c: Commit): HTMLLIElement {
     body.append(refs);
   }
 
-  if (c.modules.length) {
-    const mods = document.createElement("ul");
-    mods.className = "module-changes";
-    for (const m of c.modules) {
-      const item = document.createElement("li");
-      item.className = m.deleted ? "deleted" : "";
-      item.title = m.deleted ? `${m.path} — folder deleted in this commit` : m.path;
-      const path = document.createElement("span");
-      path.className = "path";
-      path.textContent = m.path;
-      item.append(path);
-      if (m.deleted) {
-        const tag = document.createElement("span");
-        tag.className = "deleted-tag";
-        tag.textContent = "deleted";
-        item.append(tag);
-      }
-      mods.append(item);
-    }
-    body.append(mods);
-  }
+  if (c.modules.length) body.append(moduleList(c.modules));
 
   li.append(icon, body);
   li.onclick = () => {
@@ -238,7 +279,7 @@ async function loadCommits(reset: boolean) {
   }
   try {
     // On refresh, reload everything that was showing so the list doesn't shrink.
-    const limit = reset ? Math.max(PAGE, list.childElementCount) : PAGE;
+    const limit = reset ? Math.max(PAGE, list.querySelectorAll(".commit:not(.uncommitted)").length) : PAGE;
     const log = await invoke<GitLog>("git_log", { skip: loadedCount, limit });
     if (gen !== commitsGeneration) return;
     commitsLoaded = true;
@@ -247,11 +288,15 @@ async function loadCommits(reset: boolean) {
       log.branch ?? "detached HEAD",
     );
     const rows = log.commits.map(commitRow);
+    if (log.uncommitted) rows.unshift(uncommittedRow(log.uncommitted));
     if (reset) list.replaceChildren(...rows);
     else list.append(...rows);
     loadedCount += log.commits.length;
     status.hidden = loadedCount > 0;
-    if (loadedCount === 0) status.textContent = "No commits yet.";
+    if (loadedCount === 0) {
+      status.textContent = "No commits yet.";
+      status.className = "commits-status muted";
+    }
     more.hidden = !log.hasMore;
   } catch (e) {
     if (gen !== commitsGeneration) return;
