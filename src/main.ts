@@ -622,5 +622,5 @@ document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
   el.innerHTML = icons[el.dataset.icon as keyof typeof icons] ?? "";
 });
 
-initSidebar();
+initSidebar((dir) => void startPlan(dir));
 void openInitialRoot();

@@ -792,3 +792,28 @@ dialog.env-editor {
   width: 13px;
   height: 13px;
 }
+
+.plan-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 0 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 10.5px;
+  line-height: 16px;
+  border-radius: 4px;
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+.plan-btn svg {
+  width: 9px;
+  height: 9px;
+  fill: currentColor;
+}
+.plan-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}

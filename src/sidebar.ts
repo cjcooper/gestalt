@@ -117,6 +117,8 @@ interface ModuleChange {
 
 interface GitLog {
   branch: string | null;
+  /** Repo top-level folder on disk; module paths are relative to it. */
+  repoRoot: string;
   commits: Commit[];
   hasMore: boolean;
   /** The server has changes for this branch that aren't local (as of the last fetch). */
@@ -172,6 +174,15 @@ function refBadge(ref: string): HTMLElement {
   return el;
 }
 
+/** Repo top level of the loaded list, for turning module paths into local folders. */
+let repoRoot: string | null = null;
+let onPlan: (dir: string) => void = () => {};
+
+function localFolder(path: string): string | null {
+  if (!repoRoot) return null;
+  return path === "." ? repoRoot : `${repoRoot.replace(/\/$/, "")}/${path}`;
+}
+
 /** Folders holding a main.tf, one full path per line; deleted folders are marked. */
 function moduleList(modules: ModuleChange[]): HTMLElement {
   const mods = document.createElement("ul");
@@ -189,6 +200,20 @@ function moduleList(modules: ModuleChange[]): HTMLElement {
       tag.className = "deleted-tag";
       tag.textContent = "deleted";
       item.append(tag);
+    } else {
+      const dir = localFolder(m.path);
+      if (dir) {
+        const plan = document.createElement("button");
+        plan.className = "plan-btn";
+        plan.innerHTML = icons.play;
+        plan.append("Plan");
+        plan.title = `tofu plan in ${dir}`;
+        plan.onclick = (ev) => {
+          ev.stopPropagation(); // don't also select the commit row
+          onPlan(dir);
+        };
+        item.append(plan);
+      }
     }
     mods.append(item);
   }
@@ -285,6 +310,7 @@ async function loadCommits(reset: boolean) {
     const log = await invoke<GitLog>("git_log", { skip: loadedCount, limit });
     if (gen !== commitsGeneration) return;
     commitsLoaded = true;
+    repoRoot = log.repoRoot;
     const header: (Node | string)[] = [
       Object.assign(document.createElement("span"), { className: "icon", innerHTML: icons.gitBranch }),
       log.branch ?? "detached HEAD",
@@ -380,7 +406,9 @@ export async function resetCommits() {
   await updateRepoAvailability();
 }
 
-export function initSidebar() {
+/** `plan` runs the plan procedure for a local folder (from a commit's folder list). */
+export function initSidebar(plan: (dir: string) => void) {
+  onPlan = plan;
   initSplitter();
   document.querySelectorAll<HTMLElement>("[data-tab]").forEach((b) => {
     b.onclick = () => showTab(b.dataset.tab as Tab);

@@ -43,6 +43,8 @@ pub struct Commit {
 pub struct GitLog {
     /// Current branch, or `None` when HEAD is detached.
     pub branch: Option<String>,
+    /// Repo top-level folder on disk; module paths are relative to it.
+    pub repo_root: String,
     pub commits: Vec<Commit>,
     pub has_more: bool,
     /// The branch's upstream (as of the last fetch by any tool) has commits
@@ -258,6 +260,7 @@ pub async fn first_parent_log(dir: &Path, env: &EnvMap, skip: usize, limit: usiz
     let remote_has_changes = remote_has_changes(dir, env).await;
     Ok(GitLog {
         branch,
+        repo_root: top.to_string_lossy().into_owned(),
         commits: entries.into_iter().map(|(c, _)| c).collect(),
         has_more,
         remote_has_changes,
