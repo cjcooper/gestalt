@@ -2,7 +2,7 @@
 
 Desktop app (Tauri 2 + TypeScript) for running OpenTofu across a folder tree.
 Right-click a folder to `tofu plan`, `tofu apply…` (always from a reviewed,
-saved plan) or `tofu init`.
+saved plan, with init, plan and apply all in one output pane) or `tofu init`.
 
 ## Development
 

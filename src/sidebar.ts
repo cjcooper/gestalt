@@ -437,7 +437,7 @@ export async function resetCommits() {
 
 /**
  * `plan` / `apply` run those procedures for a local folder from a commit's
- * folder list (apply = plan, confirm, apply that saved plan).
+ * folder list (apply = plan, confirm, apply that saved plan, in one pane).
  */
 export function initSidebar(plan: FolderAction, apply: FolderAction) {
   onPlan = plan;
