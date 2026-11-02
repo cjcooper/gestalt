@@ -5,6 +5,7 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
+import { initSystemColors } from "./systemColors";
 import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
 
 // ---- Backend types ---------------------------------------------------------
@@ -628,6 +629,7 @@ document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
   el.innerHTML = icons[el.dataset.icon as keyof typeof icons] ?? "";
 });
 
+initSystemColors();
 initSidebar(
   (dir) => void startPlan(dir),
   (dir) => void startPlan(dir, true),

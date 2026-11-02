@@ -5,6 +5,7 @@ mod git;
 mod module_info;
 mod order;
 mod shell_env;
+mod system_colors;
 mod tofu;
 mod watch;
 
@@ -99,6 +100,7 @@ pub fn run() {
         .manage(watch::WorkspaceWatcher::default())
         .setup(|app| {
             tofu::clear_stale_plans(app.handle());
+            system_colors::watch(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -107,6 +109,7 @@ pub fn run() {
             initial_root,
             shell_env_status,
             reload_shell_env,
+            system_colors::system_colors,
             env_edit::env_file_read,
             env_edit::env_file_validate,
             env_edit::env_file_save,

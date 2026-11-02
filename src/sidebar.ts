@@ -142,6 +142,13 @@ let commitsLoaded = false;
 let loadedCount = 0;
 let commitsGeneration = 0;
 let selectedCommit: string | null = null;
+/**
+ * Folder lists the user expanded (commit hash, or UNCOMMITTED), kept across
+ * refreshes. Commits start collapsed so the Plan/Apply buttons don't crowd the
+ * list; the uncommitted row starts expanded (it's what you're working on).
+ */
+const UNCOMMITTED = "uncommitted";
+const expanded = new Set<string>([UNCOMMITTED]);
 
 function relativeDate(iso: string): string {
   const then = new Date(iso).getTime();
@@ -249,6 +256,50 @@ function moduleList(modules: ModuleChange[]): HTMLElement {
   return mods;
 }
 
+/**
+ * A "▸ N folders" toggle plus the folder list, collapsed unless `key` is in
+ * `expanded`.
+ */
+function foldersSection(key: string, modules: ModuleChange[]): HTMLElement[] {
+  const list = moduleList(modules);
+  const toggle = document.createElement("button");
+  toggle.className = "folders-toggle";
+  const caret = document.createElement("span");
+  caret.className = "chevron";
+  caret.innerHTML = icons.chevronRight;
+  const label = document.createElement("span");
+  const n = modules.length;
+  const plural = n === 1 ? "" : "s";
+  label.textContent = modules.some((m) => !m.deleted)
+    ? `${n} folder${plural}`
+    : `${n} deleted folder${plural} · nothing to run`;
+  toggle.append(caret, label);
+  const render = () => {
+    const open = expanded.has(key);
+    list.hidden = !open;
+    toggle.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.title = open ? "Hide folders" : "Show folders and their Plan / Apply buttons";
+  };
+  toggle.onclick = (ev) => {
+    ev.stopPropagation(); // don't also select the commit row
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    render();
+  };
+  render();
+  return [toggle, list];
+}
+
+/** Shown instead of the folders toggle when a commit changed no OpenTofu folder. */
+function nothingToRun(): HTMLElement {
+  const note = document.createElement("div");
+  note.className = "nothing-to-run";
+  note.textContent = "Nothing to run · no OpenTofu folders changed";
+  note.title = "This commit didn't change any folder holding a main.tf, so there's nothing to plan or apply.";
+  return note;
+}
+
 /** Pinned first row: module folders with uncommitted changes. */
 function uncommittedRow(u: NonNullable<GitLog["uncommitted"]>): HTMLLIElement {
   const li = document.createElement("li");
@@ -267,13 +318,13 @@ function uncommittedRow(u: NonNullable<GitLog["uncommitted"]>): HTMLLIElement {
   meta.textContent =
     u.fileCount === 0
       ? "Working tree clean"
-      : `${u.fileCount} file${u.fileCount === 1 ? "" : "s"} changed` +
-        (u.modules.length ? "" : " · no module folders");
+      : `${u.fileCount} file${u.fileCount === 1 ? "" : "s"} changed`;
 
   const body = document.createElement("div");
   body.className = "commit-body";
   body.append(subject, meta);
-  if (u.modules.length) body.append(moduleList(u.modules));
+  if (u.modules.length) body.append(...foldersSection(UNCOMMITTED, u.modules));
+  else if (u.fileCount) body.append(nothingToRun());
 
   li.title = "Staged, unstaged and untracked changes compared with HEAD (ignored files excluded)";
   li.append(icon, body);
@@ -310,7 +361,7 @@ function commitRow(c: Commit): HTMLLIElement {
     body.append(refs);
   }
 
-  if (c.modules.length) body.append(moduleList(c.modules));
+  body.append(...(c.modules.length ? foldersSection(c.hash, c.modules) : [nothingToRun()]));
 
   li.append(icon, body);
   li.onclick = () => {
@@ -431,6 +482,8 @@ export async function resetCommits() {
   commitsGeneration++;
   commitsLoaded = false;
   selectedCommit = null;
+  expanded.clear();
+  expanded.add(UNCOMMITTED);
   $("commit-list").replaceChildren();
   await updateRepoAvailability();
 }
