@@ -26,6 +26,14 @@ notify-debouncer-full = "0.7.0"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Reading the macOS accent / highlight colours (system_colors.rs). Same
+# versions Tauri already pulls in.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString", "NSUserDefaults"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSAccessibility", "NSAppearance", "NSColor", "NSColorSpace", "NSWorkspace"] }
+
 # https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

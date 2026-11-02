@@ -1,11 +1,17 @@
+/*
+ * --os-* come from the macOS accent / highlight settings (systemColors.ts);
+ * unset, Gestalt's own colours apply.
+ */
 :root {
   --bg: #ffffff;
   --bg-alt: #f4f5f7;
   --fg: #1d1f23;
   --muted: #6b7280;
   --border: #dcdfe4;
-  --accent: #5b4fd6;
-  --selected: #e6e3fb;
+  --accent: var(--os-accent-light, #5b4fd6);
+  --plan: #5b4fd6;
+  --selected: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  --highlight: var(--os-highlight-light, color-mix(in srgb, var(--accent) 30%, var(--bg)));
   --ok: #15803d;
   --bad: #b91c1c;
   --warn: #b45309;
@@ -25,14 +31,34 @@
     --fg: #e4e5e7;
     --muted: #9095a0;
     --border: #3a3d42;
-    --accent: #9d93ff;
-    --selected: #34314f;
+    --accent: var(--os-accent-dark, #9d93ff);
+    --plan: #9d93ff;
+    --selected: color-mix(in srgb, var(--accent) 22%, var(--bg));
+    --highlight: var(--os-highlight-dark, color-mix(in srgb, var(--accent) 40%, var(--bg)));
     --ok: #4ade80;
     --bad: #f87171;
     --warn: #fbbf24;
     --output-bg: #17181a;
     --folder: #d8a943;
   }
+}
+
+/* System Settings › Accessibility › Display › Increase contrast. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #4b5058;
+    --border: #8a9099;
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root {
+    --muted: #c0c4cc;
+    --border: #7a7f88;
+  }
+}
+
+::selection {
+  background: var(--highlight);
 }
 
 * {
@@ -732,9 +758,54 @@ dialog.env-editor {
   }
 }
 
+.folders-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+  padding: 1px 8px 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.folders-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.folders-toggle.open {
+  border-color: var(--accent);
+}
+.folders-toggle .chevron {
+  display: inline-flex;
+  transition: transform 0.12s ease;
+}
+.folders-toggle .chevron svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.6;
+}
+.folders-toggle.open .chevron {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .folders-toggle .chevron {
+    transition: none;
+  }
+}
+.nothing-to-run {
+  margin-top: 4px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--muted);
+}
 .module-changes {
   list-style: none;
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   padding: 0;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
@@ -745,6 +816,7 @@ dialog.env-editor {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding: 3px 0;
 }
 .module-changes .path {
   overflow: hidden;
@@ -814,9 +886,10 @@ dialog.env-editor {
   width: 9px;
   height: 9px;
 }
+/* Always Gestalt's purple, not the OS accent, so Plan stands apart from Apply. */
 .plan-btn {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--plan);
+  border-color: var(--plan);
 }
 .plan-btn svg {
   fill: currentColor;
@@ -833,7 +906,7 @@ dialog.env-editor {
   color: #fff;
 }
 .plan-btn:hover {
-  background: var(--accent);
+  background: var(--plan);
   color: #fff;
 }
 
