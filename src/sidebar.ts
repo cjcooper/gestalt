@@ -81,11 +81,10 @@ function initSplitter() {
 
 type Tab = "files" | "commits";
 const TAB_KEY = "gestalt.sidebarTab";
-let activeTab: Tab = "files";
 
-function showTab(tab: Tab) {
-  activeTab = tab;
-  store.set(TAB_KEY, tab);
+function showTab(tab: Tab, persist = true) {
+  if (tab === "commits" && !repoAvailable) tab = "files";
+  if (persist) store.set(TAB_KEY, tab);
   document.querySelectorAll<HTMLElement>("[data-tab]").forEach((b) => {
     const on = b.dataset.tab === tab;
     b.classList.toggle("active", on);
@@ -107,6 +106,8 @@ interface Commit {
   date: string;
   subject: string;
   refs: string[];
+  /** Folders holding a main.tf that this commit changed (vs. its first parent). */
+  modules: { path: string; deleted: boolean }[];
 }
 
 interface GitLog {
@@ -118,6 +119,8 @@ interface GitLog {
 const PAGE = 200;
 /** No git queries until a folder is open. */
 let rootOpen = false;
+/** Whether the open folder is in a git repo; the Commits tab is hidden if not. */
+let repoAvailable = false;
 let commitsLoaded = false;
 let loadedCount = 0;
 let commitsGeneration = 0;
@@ -190,6 +193,28 @@ function commitRow(c: Commit): HTMLLIElement {
     body.append(refs);
   }
 
+  if (c.modules.length) {
+    const mods = document.createElement("ul");
+    mods.className = "module-changes";
+    for (const m of c.modules) {
+      const item = document.createElement("li");
+      item.className = m.deleted ? "deleted" : "";
+      item.title = m.deleted ? `${m.path} — folder deleted in this commit` : m.path;
+      const path = document.createElement("span");
+      path.className = "path";
+      path.textContent = m.path;
+      item.append(path);
+      if (m.deleted) {
+        const tag = document.createElement("span");
+        tag.className = "deleted-tag";
+        tag.textContent = "deleted";
+        item.append(tag);
+      }
+      mods.append(item);
+    }
+    body.append(mods);
+  }
+
   li.append(icon, body);
   li.onclick = () => {
     document.querySelectorAll(".commit.selected").forEach((el) => el.classList.remove("selected"));
@@ -243,20 +268,29 @@ async function loadCommits(reset: boolean) {
 }
 
 /** Reload commits now if the tab is showing, else on next view. */
-export function refreshCommits() {
+export async function refreshCommits() {
   if (!rootOpen) return;
-  if (activeTab === "commits") void loadCommits(true);
-  else commitsLoaded = false;
+  commitsLoaded = false;
+  // Re-checks repo status (it may have changed); showTab then reloads the list if visible.
+  await updateRepoAvailability();
+}
+
+/** Show the Commits tab only for git repos; falls back to Files otherwise. */
+async function updateRepoAvailability() {
+  repoAvailable = await invoke<boolean>("git_is_repo").catch(() => false);
+  document.querySelector<HTMLElement>('[data-tab="commits"]')!.hidden = !repoAvailable;
+  // Restore the user's preferred tab (without overwriting it when forced to Files).
+  showTab(store.get(TAB_KEY) === "commits" ? "commits" : "files", false);
 }
 
 /** A different folder was opened: forget the previous repo's list. */
-export function resetCommits() {
+export async function resetCommits() {
   rootOpen = true;
   commitsGeneration++;
   commitsLoaded = false;
   selectedCommit = null;
   $("commit-list").replaceChildren();
-  refreshCommits();
+  await updateRepoAvailability();
 }
 
 export function initSidebar() {
@@ -265,6 +299,7 @@ export function initSidebar() {
     b.onclick = () => showTab(b.dataset.tab as Tab);
   });
   $("commits-more").onclick = () => void loadCommits(false);
-  const saved = store.get(TAB_KEY);
-  showTab(saved === "commits" ? "commits" : "files");
+  // Commits stays hidden until a folder is open and known to be a repo.
+  document.querySelector<HTMLElement>('[data-tab="commits"]')!.hidden = true;
+  showTab("files", false);
 }

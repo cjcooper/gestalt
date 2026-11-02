@@ -472,13 +472,13 @@ async function loadRoot(path: string) {
   expanded.add(path); // start with the root expanded
   selectedPath = null;
   await renderTree();
-  resetCommits();
+  void resetCommits();
   renderTabs();
 }
 
 function refreshAll() {
   void renderTree();
-  refreshCommits();
+  void refreshCommits();
 }
 
 $("refresh-tree").onclick = refreshAll;

@@ -105,6 +105,7 @@ pub fn run() {
             env_edit::env_file_save,
             env_edit::env_file_delete,
             git::git_log,
+            git::git_is_repo,
             tofu::run_plan,
             tofu::run_import,
             tofu::module_info,
