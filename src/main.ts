@@ -54,10 +54,8 @@ interface Run {
   lines: { stream: string; line: string }[];
   exit?: ExitEvent;
   planState: PlanState;
-  /** Plan run started from "tofu apply…": prompt to apply when it finishes. */
+  /** Started from "Apply…": prompt to apply once the plan finishes. */
   applyWhenReady?: boolean;
-  /** Apply runs: the plan run they applied. */
-  fromPlan?: number;
 }
 
 const runs = new Map<number, Run>();
@@ -118,7 +116,12 @@ async function startRun(dir: string, kind: RunKind, command: string, args: Recor
   registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ...extra });
 }
 
-const startPlan = (dir: string, applyWhenReady = false) => startRun(dir, "plan", "run_plan", { dir }, { applyWhenReady });
+/**
+ * Plan in `dir`. With `applyWhenReady`, the run is an apply: init (if needed),
+ * plan, confirm, then apply that saved plan, all in this one run's pane.
+ */
+const startPlan = (dir: string, applyWhenReady = false) =>
+  startRun(dir, applyWhenReady ? "apply" : "plan", "run_plan", { dir }, { applyWhenReady });
 
 async function startImport(dir: string) {
   const request: ImportRequest | null = await openImportDialog(dir, relName(dir));
@@ -137,26 +140,38 @@ async function confirmAndApply(plan: Run) {
   // Re-check: the tab may have been closed while the dialog was open.
   if (!ok || plan.planState !== "ready") return;
 
+  // The apply continues this run: its output and exit arrive under plan.id.
   plan.planState = "applied";
-  renderHeader();
-  await startRun(plan.dir, "apply", "apply_plan", { planRunId: plan.id }, { fromPlan: plan.id });
+  plan.kind = "apply";
+  plan.status = "running";
+  plan.exit = undefined;
+  if (plan.id === selectedRunId) renderHeader();
+  renderTabs();
+  try {
+    await invoke("apply_plan", { planRunId: plan.id });
+  } catch (e) {
+    const exit = { runId: plan.id, code: null, success: false, cancelled: false, hasChanges: null, error: String(e), started: false };
+    handleExit(plan, exit);
+  }
 }
 
 function handleExit(run: Run, e: ExitEvent) {
   run.exit = e;
   run.status = e.cancelled ? "cancelled" : e.success ? "succeeded" : "failed";
   if (e.error) run.lines.push({ stream: "stderr", line: e.error });
-  if (run.kind === "plan" && e.hasChanges) run.planState = "ready";
-  // An apply that never started (folder busy, env error...) leaves its plan applicable.
-  if (run.kind === "apply" && !e.started && run.fromPlan != null) {
-    const plan = runs.get(run.fromPlan);
-    if (plan?.planState === "applied") plan.planState = "ready";
+  if (run.planState === "applied") {
+    // The apply step's exit. One that never started (folder busy, env
+    // error...) leaves the plan applicable.
+    if (!e.started) run.planState = "ready";
+  } else if (e.hasChanges) {
+    run.planState = "ready";
   }
 
   if (run.id === selectedRunId) selectRun(run.id);
   else renderTabs();
 
   if (run.applyWhenReady && run.planState === "ready") {
+    run.applyWhenReady = false; // ask once; the Apply button covers retries
     selectRun(run.id);
     void confirmAndApply(run);
   }
@@ -165,11 +180,16 @@ function handleExit(run: Run, e: ExitEvent) {
 // ---- Run rendering ---------------------------------------------------------
 
 function statusText(run: Run): string {
-  if (run.status === "running") return "running…";
-  if (run.kind === "plan" && run.status === "succeeded") {
+  if (run.status === "running") return run.planState === "applied" ? "applying…" : "running…";
+  if (run.planState === "applied" && run.status === "succeeded") {
+    const s = planSummary(run);
+    return s ? `applied — ${s}` : "applied";
+  }
+  // Only a plan's exit carries hasChanges.
+  if (run.exit?.hasChanges != null && run.status === "succeeded") {
     if (!run.exit?.hasChanges) return "no changes";
     const s = planSummary(run) ?? "changes pending";
-    return run.planState === "applied" ? `${s} (applied)` : run.planState === "ready" ? s : `${s} (discarded)`;
+    return run.planState === "ready" ? (run.kind === "apply" ? `${s} (not applied)` : s) : `${s} (discarded)`;
   }
   return run.exit?.code != null && run.status === "failed" ? `failed (exit ${run.exit.code})` : run.status;
 }
@@ -203,8 +223,7 @@ function renderHeader() {
   const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
   $("run-header").hidden = !run;
   if (!run) return;
-  const from = run.fromPlan != null ? ` (from plan #${run.fromPlan})` : "";
-  $("run-title").textContent = `tofu ${run.kind}${from} — ${run.dir}`;
+  $("run-title").textContent = `tofu ${run.kind} — ${run.dir}`;
   const status = $("run-status");
   status.className = `status ${run.status}`;
   status.textContent = statusText(run);

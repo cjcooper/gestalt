@@ -6,7 +6,9 @@
 //! events, so it all lands in the run's output pane.
 //!
 //! Applies only ever run against a saved plan file produced by a previous
-//! plan run, so what gets applied is exactly what the user reviewed.
+//! plan run, so what gets applied is exactly what the user reviewed. An apply
+//! continues its plan's run: it reports under the plan's run id, so init, plan
+//! and apply all land in one output pane (like `make apply`'s single stream).
 //!
 //! Events emitted:
 //! - `tofu://output` — one per output line ([`OutputEvent`])
@@ -55,7 +57,7 @@ pub struct ExitEvent {
 /// What a run is doing, which decides how its exit is handled.
 enum RunKind {
     Plan { file: PathBuf },
-    Apply { plan_id: u64, plan: SavedPlan },
+    Apply { plan: SavedPlan },
     Import,
 }
 
@@ -363,13 +365,13 @@ async fn execute(app: AppHandle, run_id: u64, dir: PathBuf, kind: RunKind, main:
             }
             (main_ran && matches!(code, Some(0 | 2)), Some(has_changes))
         }
-        RunKind::Apply { plan_id, plan } => {
+        RunKind::Apply { plan } => {
             if main_ran {
                 // A plan file is single use: after an apply attempt it's stale.
                 let _ = std::fs::remove_file(&plan.file);
             } else {
                 // Never got to run (folder busy, env error...): keep it applicable.
-                runs.plans.lock().unwrap().insert(plan_id, plan);
+                runs.plans.lock().unwrap().insert(run_id, plan);
             }
             (main_ran && code == Some(0), None)
         }
@@ -422,21 +424,23 @@ pub fn run_plan(app: AppHandle, runs: State<'_, Runs>, dir: String) -> u64 {
     run_id
 }
 
-/// Apply the saved plan produced by run `plan_run_id`. Returns the new run id.
+/// Apply the saved plan produced by run `plan_run_id`, continuing that run:
+/// output and the exit event arrive under `plan_run_id`, in the same pane.
 #[tauri::command]
-pub fn apply_plan(app: AppHandle, runs: State<'_, Runs>, plan_run_id: u64) -> u64 {
-    let run_id = next_id(&runs);
+pub fn apply_plan(app: AppHandle, runs: State<'_, Runs>, plan_run_id: u64) {
     // Take the plan out now so it can't be applied twice.
     match runs.plans.lock().unwrap().remove(&plan_run_id) {
         Some(plan) => {
-            let step = Step::new(&["apply", "-input=false", "-no-color"])
-                .arg(plan.file.clone(), format!("<saved plan from run #{plan_run_id}>"));
+            emit_line(&app, plan_run_id, "gestalt", "");
+            emit_line(&app, plan_run_id, "gestalt", "Applying the reviewed plan.");
+            let step =
+                Step::new(&["apply", "-input=false", "-no-color"]).arg(plan.file.clone(), "<saved plan from above>");
             let dir = plan.dir.clone();
-            tauri::async_runtime::spawn(execute(app, run_id, dir, RunKind::Apply { plan_id: plan_run_id, plan }, step));
+            let kind = RunKind::Apply { plan };
+            tauri::async_runtime::spawn(execute(app, plan_run_id, dir, kind, step));
         }
-        None => fail_run(&app, run_id, "That plan is no longer available. Run a new plan.".into()),
+        None => fail_run(&app, plan_run_id, "That plan is no longer available. Run a new plan.".into()),
     }
-    run_id
 }
 
 #[derive(Debug, Deserialize)]
