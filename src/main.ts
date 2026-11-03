@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
@@ -10,7 +10,7 @@ import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from ".
 
 // ---- Backend types ---------------------------------------------------------
 
-type RunKind = "plan" | "apply" | "import";
+type RunKind = "plan" | "apply" | "import" | "clean";
 
 interface DirEntry {
   name: string;
@@ -57,6 +57,8 @@ interface Run {
   planState: PlanState;
   /** Started from "Apply…": prompt to apply once the plan finishes. */
   applyWhenReady?: boolean;
+  /** Clean runs: what was freed, shown as the status. */
+  summary?: string;
 }
 
 const runs = new Map<number, Run>();
@@ -129,6 +131,75 @@ async function startImport(dir: string) {
   if (request) await startRun(dir, "import", "run_import", { dir, request });
 }
 
+interface CleanSummary {
+  paths: string[];
+  dirs: number;
+  files: number;
+  bytes: number;
+  errors: string[];
+}
+
+function formatBytes(n: number): string {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return i === 0 ? `${n} ${units[0]}` : `${n.toFixed(1)} ${units[i]}`;
+}
+
+function describeClean(s: CleanSummary): string {
+  const parts = [];
+  if (s.dirs) parts.push(`${s.dirs} .terraform folder${s.dirs === 1 ? "" : "s"}`);
+  if (s.files) parts.push(`${s.files} .terraform.lock.hcl file${s.files === 1 ? "" : "s"}`);
+  return `${parts.join(" and ")} (${formatBytes(s.bytes)})`;
+}
+
+/**
+ * Remove every .terraform folder and .terraform.lock.hcl at or below `dir`
+ * (the infra repo's cleanup-terraform-caches), after showing what will go.
+ * The result is listed in its own run tab.
+ */
+async function cleanCaches(dir: string) {
+  let found: CleanSummary;
+  try {
+    found = await invoke<CleanSummary>("clean_scan", { dir });
+  } catch (e) {
+    await message(String(e), { title: "Clean caches", kind: "error" });
+    return;
+  }
+  if (!found.paths.length) {
+    await message(`No .terraform folders or lock files under\n${dir}`, { title: "Clean caches" });
+    return;
+  }
+  const ok = await ask(
+    `Remove ${describeClean(found)} under\n${dir}?\n\nThe next plan in each module runs tofu init to download them again.`,
+    { title: "Clean caches", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+
+  // Local-only run: the backend just returns the result.
+  const run: Run = { id: -Date.now(), dir, kind: "clean", status: "running", lines: [], planState: "none" };
+  runs.set(run.id, run);
+  selectRun(run.id);
+  try {
+    const done = await invoke<CleanSummary>("clean_caches", { dir });
+    const lines = done.paths.map((p) => ({ stream: "stdout", line: `removed ${relName(p)}` }));
+    lines.push(...done.errors.map((e) => ({ stream: "stderr", line: e })));
+    run.lines.push(...lines, { stream: "gestalt", line: `Freed ${formatBytes(done.bytes)}.` });
+    run.summary = done.paths.length ? `freed ${formatBytes(done.bytes)}` : "nothing removed";
+    run.status = done.errors.length ? "failed" : "succeeded";
+  } catch (e) {
+    run.lines.push({ stream: "stderr", line: String(e) });
+    run.status = "failed";
+  }
+  if (runs.has(run.id)) {
+    if (run.id === selectedRunId) selectRun(run.id);
+    else renderTabs();
+  }
+}
+
 async function confirmAndApply(plan: Run) {
   if (plan.planState !== "ready") return;
   const summary = planSummary(plan) ?? "The plan has changes.";
@@ -181,6 +252,10 @@ function handleExit(run: Run, e: ExitEvent) {
 // ---- Run rendering ---------------------------------------------------------
 
 function statusText(run: Run): string {
+  if (run.kind === "clean") {
+    if (run.status === "running") return "cleaning…";
+    return run.status === "failed" && run.summary ? `${run.summary}, with errors` : (run.summary ?? run.status);
+  }
   if (run.status === "running") return run.planState === "applied" ? "applying…" : "running…";
   if (run.planState === "applied" && run.status === "succeeded") {
     const s = planSummary(run);
@@ -224,12 +299,12 @@ function renderHeader() {
   const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
   $("run-header").hidden = !run;
   if (!run) return;
-  $("run-title").textContent = `tofu ${run.kind} — ${run.dir}`;
+  $("run-title").textContent = run.kind === "clean" ? `clean caches — ${run.dir}` : `tofu ${run.kind} — ${run.dir}`;
   const status = $("run-status");
   status.className = `status ${run.status}`;
   status.textContent = statusText(run);
   $<HTMLButtonElement>("run-apply").hidden = run.planState !== "ready";
-  $<HTMLButtonElement>("run-cancel").hidden = run.status !== "running";
+  $<HTMLButtonElement>("run-cancel").hidden = run.status !== "running" || run.kind === "clean";
   $<HTMLButtonElement>("run-close").hidden = run.status === "running";
 }
 
@@ -301,6 +376,11 @@ async function editEnv(dir: string) {
   if (await openEnvEditor(dir)) await renderTree();
 }
 
+// Workspace > Clean All .terraform Caches… in the app menu.
+listen("menu://clean-all", () => {
+  if (currentRoot) void cleanCaches(currentRoot);
+});
+
 /** Folder menu. tofu commands only for folders with a main.tf (isModule). */
 async function showContextMenu(dir: string, isModule: boolean) {
   const item = (text: string, action: () => void) => MenuItem.new({ text, action });
@@ -318,6 +398,8 @@ async function showContextMenu(dir: string, isModule: boolean) {
       ...tofuItems,
       // Any folder: parent folders hold shared settings for the modules below.
       await item("Edit .gestalt.env…", () => void editEnv(dir)),
+      // Any folder: this folder and everything below it.
+      await item("Clean .terraform Caches…", () => void cleanCaches(dir)),
     ],
   });
   await menu.popup();

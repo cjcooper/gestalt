@@ -120,6 +120,13 @@ pub struct Runs {
     plans: Mutex<HashMap<u64, SavedPlan>>,
 }
 
+impl Runs {
+    /// Folders tofu is running in right now.
+    pub fn active_dirs(&self) -> Vec<PathBuf> {
+        self.active.lock().unwrap().values().map(|r| r.dir.clone()).collect()
+    }
+}
+
 /// Look up a variable in the resolved env, falling back to our own process env.
 fn env_var(env: &EnvMap, key: &str) -> Option<OsString> {
     env.get(OsStr::new(key)).cloned().or_else(|| std::env::var_os(key))
