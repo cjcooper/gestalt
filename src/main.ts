@@ -118,7 +118,7 @@ async function startRun(dir: string, kind: RunKind, command: string, args: Recor
 }
 
 /**
- * Plan in `dir`. With `applyWhenReady`, the run is an apply: init (if needed),
+ * Plan in `dir`. With `applyWhenReady`, the run is an apply: init,
  * plan, confirm, then apply that saved plan, all in this one run's pane.
  */
 const startPlan = (dir: string, applyWhenReady = false) =>
