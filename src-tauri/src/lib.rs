@@ -1,3 +1,4 @@
+mod clean;
 mod env_edit;
 mod env_file;
 mod fs;
@@ -11,7 +12,8 @@ mod watch;
 
 use shell_env::{EnvStatus, ShellEnv};
 use std::path::Path;
-use tauri::{AppHandle, State};
+use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 async fn shell_env_status(env: State<'_, ShellEnv>) -> Result<EnvStatus, String> {
@@ -90,6 +92,18 @@ fn open_root(app: AppHandle, workspace: State<'_, tofu::Workspace>, path: String
     Ok(fs::entry(path))
 }
 
+/// The platform's standard menu plus a Workspace menu. Its items are handled
+/// in the UI, which hears about them as `menu://<id>` events.
+fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::default(app)?;
+    let clean = MenuItem::with_id(app, "clean-all", "Clean All .terraform Caches…", true, None::<&str>)?;
+    let workspace = Submenu::with_items(app, "Workspace", true, &[&clean])?;
+    // Before Window and Help, where macOS expects them to stay.
+    let at = menu.items()?.len().saturating_sub(2);
+    menu.insert(&workspace, at)?;
+    Ok(menu)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -98,6 +112,12 @@ pub fn run() {
         .manage(ShellEnv::default())
         .manage(tofu::Workspace::default())
         .manage(watch::WorkspaceWatcher::default())
+        .menu(app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == "clean-all" {
+                let _ = app.emit("menu://clean-all", ());
+            }
+        })
         .setup(|app| {
             tofu::clear_stale_plans(app.handle());
             system_colors::watch(app.handle());
@@ -105,6 +125,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_dir,
+            clean::clean_scan,
+            clean::clean_caches,
             open_root,
             initial_root,
             shell_env_status,

@@ -4,6 +4,11 @@ Desktop app (Tauri 2 + TypeScript) for running OpenTofu across a folder tree.
 Right-click a folder to `tofu plan`, `tofu apply…` (always from a reviewed,
 saved plan, with init, plan and apply all in one output pane) or `tofu init`.
 
+To free disk space, right-click any folder and choose **Clean .terraform
+Caches…** to remove every `.terraform` folder and `.terraform.lock.hcl` in it
+and below, or use **Workspace › Clean All .terraform Caches…** for the whole
+opened folder. The next plan re-runs `tofu init` to download them again.
+
 ## Development
 
 ```sh
