@@ -1,8 +1,9 @@
 //! Running OpenTofu and streaming its output to the UI.
 //!
-//! A run is one or more tofu invocations ("steps") in a folder: if the folder
-//! has never been initialised, `tofu init` runs first, then the requested
-//! command. Everything — including failures to start — is reported through
+//! A run is one or more tofu invocations ("steps") in a folder: `tofu init`
+//! always runs first (it's idempotent, and a stale `.terraform` — new modules,
+//! providers or backend settings — would otherwise fail the command), then the
+//! requested command. Everything — including failures to start — is reported through
 //! events, so it all lands in the run's output pane.
 //!
 //! Applies only ever run against a saved plan file produced by a previous
@@ -62,7 +63,9 @@ enum RunKind {
 }
 
 impl RunKind {
-    /// Whether to `tofu init` first when the folder has no `.terraform`.
+    /// Whether to `tofu init` first. An apply continues its plan's run, which
+    /// already initialised the folder; re-initialising could change the
+    /// providers the saved plan was made with.
     fn auto_init(&self) -> bool {
         !matches!(self, RunKind::Apply { .. })
     }
@@ -317,8 +320,7 @@ async fn execute_steps(app: &AppHandle, run_id: u64, dir: &Path, kind: &RunKind,
     };
 
     let mut steps = Vec::new();
-    if kind.auto_init() && !dir.join(".terraform").is_dir() {
-        emit_line(app, run_id, "gestalt", "No .terraform directory here; running tofu init first.");
+    if kind.auto_init() {
         steps.push(Step::new(&["init", "-input=false", "-no-color"]));
     }
     steps.push(main);
@@ -345,7 +347,7 @@ async fn execute_steps(app: &AppHandle, run_id: u64, dir: &Path, kind: &RunKind,
     unreachable!("steps always has a main step")
 }
 
-/// Run `main` (after an auto-init if needed) in `dir`, then report the exit.
+/// Run `main` (after an init, except for applies) in `dir`, then report the exit.
 async fn execute(app: AppHandle, run_id: u64, dir: PathBuf, kind: RunKind, main: Step) {
     let outcome = execute_steps(&app, run_id, &dir, &kind, main).await;
 
