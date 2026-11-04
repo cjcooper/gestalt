@@ -36,6 +36,7 @@ export const icons = {
     '<path d="M12 13v8l-4-4"/><path d="m12 21 4-4"/><path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284"/>',
   ),
   chevronRight: svg('<path d="m9 18 6-6-6-6"/>'),
+  x: svg('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
   check: svg('<path d="M20 6 9 17l-5-5"/>'),
   play: svg('<polygon points="6 3 20 12 6 21 6 3"/>'),
   gitCommit: svg('<circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/>'),

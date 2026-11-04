@@ -68,6 +68,8 @@ const early = new Map<number, { lines: Run["lines"]; exit?: ExitEvent }>();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const LAST_ROOT_KEY = "gestalt.lastRoot";
+const IS_MAC = navigator.userAgent.includes("Mac");
+document.documentElement.dataset.platform = IS_MAC ? "mac" : "other";
 
 function relName(dir: string): string {
   const root = currentRoot;
@@ -274,13 +276,35 @@ function renderTabs() {
   const tabs = $("run-tabs");
   tabs.replaceChildren(
     ...[...runs.values()].map((r) => {
-      const b = document.createElement("button");
-      b.className =
+      const tab = document.createElement("div");
+      tab.className =
         `run-tab ${r.status}` + (r.planState === "ready" ? " plan-ready" : "") + (r.id === selectedRunId ? " selected" : "");
-      b.textContent = `${r.kind} · ${relName(r.dir)}`;
-      b.title = r.dir;
-      b.onclick = () => selectRun(r.id);
-      return b;
+      tab.title = r.dir;
+      tab.onclick = () => selectRun(r.id);
+      // Middle-click closes, as in browser and editor tabs.
+      tab.onauxclick = (e) => {
+        if (e.button === 1 && r.status !== "running") closeRun(r);
+      };
+
+      const label = document.createElement("button");
+      label.className = "run-tab-label";
+      label.textContent = `${r.kind} · ${relName(r.dir)}`;
+
+      const close = document.createElement("button");
+      close.className = "run-tab-close";
+      close.innerHTML = icons.x;
+      close.title = "Close";
+      close.setAttribute("aria-label", `Close ${r.kind} · ${relName(r.dir)}`);
+      // A running tab can't be closed; Cancel it first.
+      close.hidden = r.status === "running";
+      close.onclick = (e) => {
+        e.stopPropagation();
+        closeRun(r);
+      };
+
+      // macOS puts a tab's close button on the left; Windows and Linux on the right.
+      tab.append(...(IS_MAC ? [close, label] : [label, close]));
+      return tab;
     }),
   );
 }
@@ -305,7 +329,6 @@ function renderHeader() {
   status.textContent = statusText(run);
   $<HTMLButtonElement>("run-apply").hidden = run.planState !== "ready";
   $<HTMLButtonElement>("run-cancel").hidden = run.status !== "running" || run.kind === "clean";
-  $<HTMLButtonElement>("run-close").hidden = run.status === "running";
 }
 
 function selectRun(id: number | null) {
@@ -356,17 +379,19 @@ $("run-cancel").onclick = () => {
   if (selectedRunId != null) invoke("cancel_tofu", { runId: selectedRunId }).catch(console.error);
 };
 
-$("run-close").onclick = () => {
-  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
-  if (!run) return;
+function closeRun(run: Run) {
   if (run.planState === "ready") {
     run.planState = "discarded";
     invoke("discard_plan", { planRunId: run.id }).catch(console.error);
   }
   runs.delete(run.id);
-  const remaining = [...runs.keys()];
-  selectRun(remaining.length ? remaining[remaining.length - 1] : null);
-};
+  if (run.id === selectedRunId) {
+    const remaining = [...runs.keys()];
+    selectRun(remaining.length ? remaining[remaining.length - 1] : null);
+  } else {
+    renderTabs();
+  }
+}
 
 // ---- Folder tree -------------------------------------------------------------
 
