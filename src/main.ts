@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import { newAnsiState, renderAnsi, stripAnsi, type AnsiState } from "./ansi";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
@@ -59,6 +60,8 @@ interface Run {
   applyWhenReady?: boolean;
   /** Clean runs: what was freed, shown as the status. */
   summary?: string;
+  /** Colour state each stream left set, while the run is shown. */
+  ansi: Map<string, AnsiState>;
 }
 
 const runs = new Map<number, Run>();
@@ -85,7 +88,7 @@ function baseName(p: string): string {
 /** The "Plan: 1 to add, 0 to change, 0 to destroy." line, if tofu printed one. */
 function planSummary(run: Run): string | undefined {
   for (let i = run.lines.length - 1; i >= 0; i--) {
-    const l = run.lines[i].line.trim();
+    const l = stripAnsi(run.lines[i].line).trim();
     if (/^Plan: \d+ to /.test(l)) return l;
   }
   return undefined;
@@ -116,7 +119,7 @@ async function startRun(dir: string, kind: RunKind, command: string, args: Recor
       exit: { runId: id, code: null, success: false, cancelled: false, hasChanges: null, error: String(e), started: false },
     });
   }
-  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ...extra });
+  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ansi: new Map(), ...extra });
 }
 
 /**
@@ -180,7 +183,7 @@ async function cleanCaches(dir: string) {
   if (!ok) return;
 
   // Local-only run: the backend just returns the result.
-  const run: Run = { id: -Date.now(), dir, kind: "clean", status: "running", lines: [], planState: "none" };
+  const run: Run = { id: -Date.now(), dir, kind: "clean", status: "running", lines: [], planState: "none", ansi: new Map() };
   runs.set(run.id, run);
   selectRun(run.id);
   try {
@@ -285,14 +288,17 @@ function renderTabs() {
   );
 }
 
-function lineNode(l: Run["lines"][number]): Node {
-  if (l.stream !== "stdout") {
-    const s = document.createElement("span");
-    s.className = l.stream;
-    s.textContent = l.line + "\n";
-    return s;
-  }
-  return document.createTextNode(l.line + "\n");
+/** Render one output line; tofu's ANSI colours carry over between lines of a stream. */
+function lineNode(run: Run, l: Run["lines"][number]): Node {
+  let state = run.ansi.get(l.stream);
+  if (!state) run.ansi.set(l.stream, (state = newAnsiState()));
+  const content = renderAnsi(l.line, state);
+  content.appendChild(document.createTextNode("\n"));
+  if (l.stream === "stdout") return content;
+  const s = document.createElement("span");
+  s.className = l.stream;
+  s.appendChild(content);
+  return s;
 }
 
 function renderHeader() {
@@ -312,7 +318,8 @@ function selectRun(id: number | null) {
   selectedRunId = id;
   const out = $("run-output");
   const run = id != null ? runs.get(id) : undefined;
-  out.replaceChildren(...(run?.lines.map(lineNode) ?? []));
+  if (run) run.ansi = new Map();
+  out.replaceChildren(...(run?.lines.map((l) => lineNode(run, l)) ?? []));
   out.scrollTop = out.scrollHeight;
   renderHeader();
   renderTabs();
@@ -331,7 +338,7 @@ listen<OutputEvent>("tofu://output", ({ payload }) => {
   if (run.id === selectedRunId) {
     const out = $("run-output");
     const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-    out.appendChild(lineNode(entry));
+    out.appendChild(lineNode(run, entry));
     if (atBottom) out.scrollTop = out.scrollHeight;
   }
 });

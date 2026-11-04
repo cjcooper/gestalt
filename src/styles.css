@@ -17,6 +17,23 @@
   --warn: #b45309;
   --output-bg: #fafafa;
   --folder: #c08a1e;
+  /* ANSI palette for tofu output: 0–7 normal, 8–15 bright. */
+  --ansi-0: #1d1f23;
+  --ansi-1: #c4262e;
+  --ansi-2: #18794e;
+  --ansi-3: #a15c00;
+  --ansi-4: #2b5fd9;
+  --ansi-5: #a2369e;
+  --ansi-6: #0b7285;
+  --ansi-7: #6b7280;
+  --ansi-8: #6b7280;
+  --ansi-9: #e03e3e;
+  --ansi-10: #2b9a5f;
+  --ansi-11: #b7791f;
+  --ansi-12: #4c7ef3;
+  --ansi-13: #c04fbc;
+  --ansi-14: #1098ad;
+  --ansi-15: #1d1f23;
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   font-size: 13px;
@@ -40,6 +57,22 @@
     --warn: #fbbf24;
     --output-bg: #17181a;
     --folder: #d8a943;
+    --ansi-0: #4b5058;
+    --ansi-1: #f87171;
+    --ansi-2: #4ade80;
+    --ansi-3: #facc15;
+    --ansi-4: #60a5fa;
+    --ansi-5: #e879f9;
+    --ansi-6: #22d3ee;
+    --ansi-7: #d1d5db;
+    --ansi-8: #8b919c;
+    --ansi-9: #fca5a5;
+    --ansi-10: #86efac;
+    --ansi-11: #fde047;
+    --ansi-12: #93c5fd;
+    --ansi-13: #f0abfc;
+    --ansi-14: #67e8f9;
+    --ansi-15: #ffffff;
   }
 }
 
@@ -504,6 +537,116 @@ body.resizing {
 }
 .output .gestalt {
   color: var(--accent);
+}
+
+/* tofu's own colours (see ansi.ts). */
+.output .ansi-bold {
+  font-weight: 600;
+}
+.output .ansi-dim {
+  opacity: 0.65;
+}
+.output .ansi-italic {
+  font-style: italic;
+}
+.output .ansi-underline {
+  text-decoration: underline;
+}
+.output .ansi-fg-0 {
+  color: var(--ansi-0);
+}
+.output .ansi-fg-1 {
+  color: var(--ansi-1);
+}
+.output .ansi-fg-2 {
+  color: var(--ansi-2);
+}
+.output .ansi-fg-3 {
+  color: var(--ansi-3);
+}
+.output .ansi-fg-4 {
+  color: var(--ansi-4);
+}
+.output .ansi-fg-5 {
+  color: var(--ansi-5);
+}
+.output .ansi-fg-6 {
+  color: var(--ansi-6);
+}
+.output .ansi-fg-7 {
+  color: var(--ansi-7);
+}
+.output .ansi-fg-8 {
+  color: var(--ansi-8);
+}
+.output .ansi-fg-9 {
+  color: var(--ansi-9);
+}
+.output .ansi-fg-10 {
+  color: var(--ansi-10);
+}
+.output .ansi-fg-11 {
+  color: var(--ansi-11);
+}
+.output .ansi-fg-12 {
+  color: var(--ansi-12);
+}
+.output .ansi-fg-13 {
+  color: var(--ansi-13);
+}
+.output .ansi-fg-14 {
+  color: var(--ansi-14);
+}
+.output .ansi-fg-15 {
+  color: var(--ansi-15);
+}
+.output .ansi-bg-0 {
+  background-color: var(--ansi-0);
+}
+.output .ansi-bg-1 {
+  background-color: var(--ansi-1);
+}
+.output .ansi-bg-2 {
+  background-color: var(--ansi-2);
+}
+.output .ansi-bg-3 {
+  background-color: var(--ansi-3);
+}
+.output .ansi-bg-4 {
+  background-color: var(--ansi-4);
+}
+.output .ansi-bg-5 {
+  background-color: var(--ansi-5);
+}
+.output .ansi-bg-6 {
+  background-color: var(--ansi-6);
+}
+.output .ansi-bg-7 {
+  background-color: var(--ansi-7);
+}
+.output .ansi-bg-8 {
+  background-color: var(--ansi-8);
+}
+.output .ansi-bg-9 {
+  background-color: var(--ansi-9);
+}
+.output .ansi-bg-10 {
+  background-color: var(--ansi-10);
+}
+.output .ansi-bg-11 {
+  background-color: var(--ansi-11);
+}
+.output .ansi-bg-12 {
+  background-color: var(--ansi-12);
+}
+.output .ansi-bg-13 {
+  background-color: var(--ansi-13);
+}
+.output .ansi-bg-14 {
+  background-color: var(--ansi-14);
+}
+.output .ansi-bg-15 {
+  background-color: var(--ansi-15);
 }
 
 /* ---- Modal dialogs ---- */
