@@ -29,3 +29,7 @@ dist-ssr
 *.tfstate
 *.tfstate.*
 *.tfplan
+
+# App Store Connect API keys (notarization)
+/private_keys/
+*.p8
