@@ -328,7 +328,7 @@ async fn execute_steps(app: &AppHandle, run_id: u64, dir: &Path, kind: &RunKind,
 
     let mut steps = Vec::new();
     if kind.auto_init() {
-        steps.push(Step::new(&["init", "-input=false", "-no-color"]));
+        steps.push(Step::new(&["init", "-input=false"]));
     }
     steps.push(main);
     let last = steps.len() - 1;
@@ -425,7 +425,7 @@ pub fn run_plan(app: AppHandle, runs: State<'_, Runs>, dir: String) -> u64 {
             let mut out = OsString::from("-out=");
             out.push(&file);
             let step =
-                Step::new(&["plan", "-input=false", "-no-color", "-detailed-exitcode"]).arg(out, "-out=<saved plan>");
+                Step::new(&["plan", "-input=false", "-detailed-exitcode"]).arg(out, "-out=<saved plan>");
             tauri::async_runtime::spawn(execute(app, run_id, dir, RunKind::Plan { file }, step));
         }
         Err(e) => fail_run(&app, run_id, e),
@@ -443,7 +443,7 @@ pub fn apply_plan(app: AppHandle, runs: State<'_, Runs>, plan_run_id: u64) {
             emit_line(&app, plan_run_id, "gestalt", "");
             emit_line(&app, plan_run_id, "gestalt", "Applying the reviewed plan.");
             let step =
-                Step::new(&["apply", "-input=false", "-no-color"]).arg(plan.file.clone(), "<saved plan from above>");
+                Step::new(&["apply", "-input=false"]).arg(plan.file.clone(), "<saved plan from above>");
             let dir = plan.dir.clone();
             let kind = RunKind::Apply { plan };
             tauri::async_runtime::spawn(execute(app, plan_run_id, dir, kind, step));
@@ -490,7 +490,7 @@ fn import_step(req: &ImportRequest) -> Result<Step, String> {
         return Err("Import needs the ID of the existing resource.".into());
     }
 
-    let mut step = Step::new(&["import", "-input=false", "-no-color"]);
+    let mut step = Step::new(&["import", "-input=false"]);
     if let Some(f) = non_blank(&req.var_file) {
         step = step.plain(format!("-var-file={f}"));
     }
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn import_minimal() {
         let step = import_step(&req(serde_json::json!({"address": " aws_s3_bucket.b ", "id": "my-bucket"}))).unwrap();
-        assert_eq!(step.shown, ["import", "-input=false", "-no-color", "aws_s3_bucket.b", "my-bucket"]);
+        assert_eq!(step.shown, ["import", "-input=false", "aws_s3_bucket.b", "my-bucket"]);
     }
 
     #[test]
@@ -623,7 +623,6 @@ mod tests {
             [
                 "import",
                 "-input=false",
-                "-no-color",
                 "-var-file=prod.tfvars",
                 "-lock=false",
                 "-lock-timeout=30s",
