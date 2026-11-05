@@ -95,3 +95,24 @@ tofu runs with, lowest to highest precedence: the app's environment, your
 login shell's environment, then every `.gestalt.env` from the opened folder
 down to the module being run (deeper files override). See
 `src-tauri/src/env_file.rs` for the file format.
+
+## License
+
+Gestalt is released under the [MIT License](LICENSE), Copyright (c) 2026 it-problems.
+
+### Third-party licenses
+
+Gestalt ships many open-source packages. Their licenses are listed in the
+app under **About Gestalt** and in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+After adding, removing or upgrading any Rust or npm dependency, regenerate
+both (needs `cargo install cargo-about`) and commit the results:
+
+```sh
+node scripts/licenses.mjs          # writes THIRD_PARTY_NOTICES.md and public/third-party-licenses.json
+node scripts/licenses.mjs --check  # fails if they're stale
+```
+
+A new license kind must be added to `about.toml` on purpose. Adapted content
+that isn't a package (e.g. the Lucide icon shapes in `src/icons.ts`) is
+credited in `scripts/licenses.mjs`.

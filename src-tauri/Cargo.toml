@@ -3,6 +3,7 @@ name = "gestalt"
 version = "0.1.1"
 description = "Desktop runner for OpenTofu across a folder tree"
 authors = ["Chris Cooper"]
+license = "MIT"
 edition = "2024"
 
 [lib]
@@ -22,6 +23,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt-multi-thread", "time"] }
 hcl-rs = "0.20.0"
 notify-debouncer-full = "0.7.0"
+tauri-plugin-opener = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

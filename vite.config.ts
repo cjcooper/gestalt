@@ -1,6 +1,8 @@
 import { defineConfig } from "vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error type error without @types/node package
+import { fileURLToPath } from "node:url";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
@@ -10,6 +12,15 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Two pages: the main window and the About window (src-tauri/src/lib.rs).
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("index.html", import.meta.url)),
+        about: fileURLToPath(new URL("about.html", import.meta.url)),
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1430,
