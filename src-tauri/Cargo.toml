@@ -1,6 +1,6 @@
 [package]
 name = "gestalt"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop runner for OpenTofu across a folder tree"
 authors = ["Chris Cooper"]
 edition = "2024"
