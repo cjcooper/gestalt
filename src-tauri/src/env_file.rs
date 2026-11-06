@@ -257,6 +257,18 @@ F=price$ 5 and a#hash
         assert!(apply("A=\"open", &mut env).unwrap_err().contains("unterminated"));
         assert!(apply("A='x' junk", &mut env).unwrap_err().contains("after closing quote"));
         assert!(apply("A=${B", &mut env).unwrap_err().contains("unterminated ${"));
+        assert_eq!(apply("A='open", &mut env).unwrap_err(), "line 1: unterminated single quote");
+        assert_eq!(apply("A=\"ends in \\", &mut env).unwrap_err(), "line 1: unterminated double quote");
+        assert_eq!(apply("A=${1X}", &mut env).unwrap_err(), "line 1: invalid variable name `${1X}`");
+        assert_eq!(apply("# c\nunset OK 9NO", &mut env).unwrap_err(), "line 2: invalid variable name `9NO`");
+    }
+
+    #[test]
+    fn double_quote_escapes() {
+        let mut env = EnvMap::new();
+        apply(r#"A="line1\nline2 \w \$x""#, &mut env).unwrap();
+        // Unknown escapes are kept as written.
+        assert_eq!(get(&env, "A").unwrap(), "line1\nline2 \\w $x");
     }
 
     #[test]
