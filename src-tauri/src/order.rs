@@ -303,6 +303,124 @@ variable "s3_key" {}
         assert_eq!(ordered.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
         std::fs::remove_dir_all(&base).unwrap();
     }
+
+    fn analyze_files(name: &str, files: &[(&str, &[u8])]) -> ModuleRefs {
+        let d = std::env::temp_dir().join(format!("gestalt-order-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for (file, content) in files {
+            std::fs::write(d.join(file), content).unwrap();
+        }
+        let refs = analyze(&d);
+        std::fs::remove_dir_all(&d).unwrap();
+        refs
+    }
+
+    fn analyze_tf(name: &str, tf: &str) -> ModuleRefs {
+        analyze_files(name, &[("main.tf", tf.as_bytes())])
+    }
+
+    #[test]
+    fn tfvars_precedence_and_unusable_files() {
+        let tf = br#"
+variable "env" { default = "dev" }
+variable "key" {}
+terraform {
+  backend "s3" {
+    bucket = "state-${var.env}"
+    key    = var.key
+  }
+}
+"#;
+        let refs = analyze_files(
+            "tfvars",
+            &[
+                ("main.tf", tf),
+                // terraform.tfvars first, then *.auto.tfvars: the auto file wins.
+                ("terraform.tfvars", b"env = \"stg\"\nkey = \"base\"\n"),
+                ("a.auto.tfvars", b"key = \"auto\"\nbad = var.env\n"),
+                ("unreadable.tf", &[0xff, 0xfe]),
+            ],
+        );
+        assert_eq!(refs.state, Some(id("s3", "state-stg", "auto")));
+    }
+
+    #[test]
+    fn root_folder_is_dot() {
+        let base = std::env::temp_dir().join(format!("gestalt-order-dot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        module(&base, ".", "root.tfstate", "");
+        module(&base, "app", "app.tfstate", &reads("root.tfstate"));
+        let ordered = order(&base, &["app".into(), ".".into()], &mut HashMap::new());
+        assert_eq!(ordered, [(".".to_string(), vec![]), ("app".to_string(), vec![".".to_string()])]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn id(backend: &str, bucket: &str, key: &str) -> StateId {
+        StateId { backend: backend.into(), bucket: bucket.into(), key: key.into() }
+    }
+
+    #[test]
+    fn backend_kinds_and_variable_defaults() {
+        let refs = analyze_tf(
+            "kinds",
+            r#"
+variable "bucket" { default = "from-default" }
+variable { default = "no label: ignored" }
+terraform {
+  backend "gcs" {
+    bucket = var.bucket
+    prefix = "p"
+  }
+}
+data "terraform_remote_state" "gcs_no_prefix" {
+  backend = "gcs"
+  config  = { bucket = "b" }
+}
+data "terraform_remote_state" "local_default" {
+  backend = "local"
+  config  = {}
+}
+data "terraform_remote_state" "local_path" {
+  backend = "local"
+  config  = { path = "../x/terraform.tfstate" }
+}
+data "terraform_remote_state" "unsupported" {
+  backend = "http"
+  config  = { address = "https://example.com" }
+}
+data "terraform_remote_state" "s3_no_bucket" {
+  backend = "s3"
+  config  = { key = "k" }
+}
+data "terraform_remote_state" "gcs_no_bucket" {
+  backend = "gcs"
+  config  = { prefix = "p" }
+}
+data "terraform_remote_state" "s3_numeric_key" {
+  backend = "s3"
+  config  = { bucket = "b", key = 5 }
+}
+data "terraform_remote_state" "unknown_backend_expr" {
+  backend = var.missing
+  config  = { bucket = "b", key = "k" }
+}
+data "terraform_remote_state" "config_not_an_object" {
+  backend = "s3"
+  config  = "nope"
+}
+"#,
+        );
+        assert_eq!(refs.state, Some(id("gcs", "from-default", "p")));
+        assert_eq!(refs.reads, [id("gcs", "b", ""), id("local", "", "terraform.tfstate"), id("local", "", "../x/terraform.tfstate")]);
+    }
+
+    #[test]
+    fn unlabelled_backend_is_ignored() {
+        let refs = analyze_tf("nolabel", "terraform {\n  backend {\n    path = \"x\"\n  }\n}\n");
+        assert_eq!(refs, ModuleRefs::default());
+    }
 }
 
 #[cfg(test)]

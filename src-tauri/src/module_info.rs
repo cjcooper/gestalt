@@ -235,6 +235,55 @@ data "aws_caller_identity" "me" {}
         assert_eq!(info.parse_errors.len(), 1);
         assert!(info.parse_errors[0].starts_with("broken.tf"));
     }
+
+    #[test]
+    fn json_tfvars_unreadable_files_and_counted_resources() {
+        let dir = std::env::temp_dir().join(format!("gestalt-modinfo-json-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("main.tf"),
+            r#"
+variable "a" {
+  description = "for ${var.b}"
+}
+variable "b" {}
+variable "c" {}
+resource "null_resource" "n" {
+  count = 2
+}
+"#,
+        )
+        .unwrap();
+        // Later auto files win: zz overrides terraform.tfvars.json for "b".
+        std::fs::write(dir.join("terraform.tfvars.json"), r#"{"a": 1, "b": 2}"#).unwrap();
+        std::fs::write(dir.join("zz.auto.tfvars.json"), r#"{"b": 3}"#).unwrap();
+        // Unparseable auto tfvars set nothing.
+        std::fs::write(dir.join("bad.auto.tfvars.json"), "{").unwrap();
+        std::fs::write(dir.join("bad.auto.tfvars"), "c = ").unwrap();
+        std::fs::write(dir.join("README.md"), "not config").unwrap();
+        std::fs::write(dir.join("binary.tf"), [0xff, 0xfe, 0x00]).unwrap();
+
+        let info = read(&dir, &EnvMap::new()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let v = |n: &str| info.variables.iter().find(|v| v.name == n).unwrap();
+        // A non-literal description is shown as written.
+        assert_eq!(v("a").description.as_deref(), Some("\"for ${var.b}\""));
+        assert_eq!(v("a").provided_by.as_deref(), Some("terraform.tfvars.json"));
+        assert_eq!(v("b").provided_by.as_deref(), Some("zz.auto.tfvars.json"));
+        assert_eq!(v("c").provided_by, None);
+        assert_eq!(info.resources, [ResourceInfo { address: "null_resource.n".into(), repeated: Some("count") }]);
+        assert_eq!(info.var_files, ["bad.auto.tfvars", "bad.auto.tfvars.json", "terraform.tfvars.json", "zz.auto.tfvars.json"]);
+        assert_eq!(info.parse_errors.len(), 1);
+        assert!(info.parse_errors[0].starts_with("binary.tf: "), "{:?}", info.parse_errors);
+    }
+
+    #[test]
+    fn missing_folder_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("gestalt-modinfo-missing-{}", std::process::id()));
+        assert!(read(&dir, &EnvMap::new()).unwrap_err().starts_with(&*dir.to_string_lossy()));
+    }
 }
 
 #[cfg(test)]
