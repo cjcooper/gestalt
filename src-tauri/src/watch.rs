@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const DEBOUNCE: Duration = Duration::from_millis(400);
 
@@ -130,7 +130,7 @@ async fn git_path(root: &Path, env: &EnvMap, flag: &str) -> Option<PathBuf> {
 }
 
 /// (Re)start watching `root`, replacing any previous watch.
-pub async fn start(app: AppHandle, root: PathBuf) {
+pub async fn start<R: Runtime>(app: AppHandle<R>, root: PathBuf) {
     let state = app.state::<WorkspaceWatcher>();
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     // Stop the old watcher right away so it can't report on the old root.
@@ -242,64 +242,169 @@ mod tests {
         assert!(k("/r/mod/main.tf").worktree);
     }
 
-    /// Real OS file events (FSEvents on macOS) flow through the debouncer and
-    /// classify as expected: edits, new files, and ignored .terraform noise.
-    #[test]
-    fn real_events_are_classified() {
-        let base = std::env::temp_dir().join(format!("gestalt-watch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join("mod/.terraform")).unwrap();
-        std::fs::write(base.join("mod/main.tf"), "").unwrap();
-        let root = base.canonicalize().unwrap();
-        let l = Locations { root: root.clone(), git_dir: None, common_dir: None };
+    use std::sync::mpsc::Receiver;
+    use std::time::Instant;
+    use tauri::Listener;
 
+    /// How long to wait for an expected change (debounce plus OS latency).
+    const EXPECT: Duration = Duration::from_secs(5);
+    /// How long to watch for a change that must not be reported.
+    const QUIET: Duration = Duration::from_millis(1200);
+
+    fn temp(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("gestalt-watch-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base.canonicalize().unwrap()
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    /// Mock app with watcher state, and a channel of the changes it emits.
+    fn app() -> (tauri::App<tauri::test::MockRuntime>, Receiver<Changes>) {
+        let app = tauri::test::mock_app();
+        app.manage(WorkspaceWatcher::default());
+        app.manage(ShellEnv::default());
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut d = new_debouncer(Duration::from_millis(150), None, move |res: DebounceEventResult| {
-            if let Ok(events) = res {
-                let mut ch = Changes::default();
-                for ev in &events {
-                    for p in &ev.paths {
-                        ch.merge(classify(p, &ev.kind, &l));
-                    }
-                }
-                let _ = tx.send(ch);
-            }
-        })
-        .unwrap();
-        d.watch(&root, RecursiveMode::Recursive).unwrap();
+        app.listen_any("workspace://changed", move |e| {
+            let v: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
+            let flag = |k: &str| v[k].as_bool().unwrap();
+            let _ = tx.send(Changes {
+                worktree: flag("worktree"),
+                structure: flag("structure"),
+                folders: flag("folders"),
+                git_index: flag("gitIndex"),
+                git_refs: flag("gitRefs"),
+            });
+        });
+        (app, rx)
+    }
+
+    /// Merge reported changes until `done` holds or `max` elapses.
+    fn collect(rx: &Receiver<Changes>, done: impl Fn(&Changes) -> bool, max: Duration) -> Changes {
+        let deadline = Instant::now() + max;
+        let mut seen = Changes::default();
+        while !done(&seen)
+            && let Ok(ch) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            seen.merge(ch);
+        }
+        seen
+    }
+
+    fn is_watching(app: &tauri::App<tauri::test::MockRuntime>) -> bool {
+        app.state::<WorkspaceWatcher>().active.lock().unwrap().is_some()
+    }
+
+    /// Real OS file events (FSEvents on macOS) for a plain clone flow through
+    /// `start`'s watcher and come out as the right kinds of change.
+    #[tokio::test]
+    async fn start_reports_worktree_and_git_changes() {
+        let root = temp("plain");
+        git(&root, &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(root.join("mod/.terraform")).unwrap();
+        std::fs::write(root.join("mod/main.tf"), "").unwrap();
+        let (app, rx) = app();
+
+        start(app.handle().clone(), root.clone()).await;
+        assert!(is_watching(&app));
         std::thread::sleep(Duration::from_millis(300)); // let FSEvents attach
+        collect(&rx, |_| false, QUIET); // anything from setup
 
         // Noise only: nothing should be reported as a change.
         std::fs::write(root.join("mod/.terraform/x"), "noise").unwrap();
-        let mut seen = Changes::default();
-        while let Ok(ch) = rx.recv_timeout(Duration::from_millis(800)) {
-            seen.merge(ch);
-        }
-        assert!(!seen.any(), "ignored-dir write was reported: {seen:?}");
+        std::fs::write(root.join("mod/.gestalt.env.tmp-1"), "editor temp").unwrap();
+        let seen = collect(&rx, |_| false, QUIET);
+        assert!(!seen.any(), "noise was reported: {seen:?}");
 
-        // A new file: worktree + structure.
         std::fs::write(root.join("mod/new.tf"), "x").unwrap();
-        let mut seen = Changes::default();
-        while let Ok(ch) = rx.recv_timeout(Duration::from_millis(1500)) {
-            seen.merge(ch);
-            if seen.structure {
-                break;
-            }
-        }
+        let seen = collect(&rx, |c| c.structure, EXPECT);
         assert!(seen.worktree && seen.structure, "new file not seen: {seen:?}");
 
-        // A new folder: folders flag.
         std::fs::create_dir(root.join("other")).unwrap();
-        let mut seen = Changes::default();
-        while let Ok(ch) = rx.recv_timeout(Duration::from_millis(1500)) {
-            seen.merge(ch);
-            if seen.folders {
-                break;
-            }
-        }
-        assert!(seen.folders, "new folder not seen: {seen:?}");
+        assert!(collect(&rx, |c| c.folders, EXPECT).folders, "new folder not seen");
 
-        drop(d);
+        git(&root, &["add", "mod/new.tf"]);
+        assert!(collect(&rx, |c| c.git_index, EXPECT).git_index, "staging not seen");
+
+        git(&root, &["commit", "-q", "-m", "one"]);
+        assert!(collect(&rx, |c| c.git_refs, EXPECT).git_refs, "commit not seen");
+
+        // A folder that can't be opened stops the old watch and starts none.
+        start(app.handle().clone(), root.join("missing")).await;
+        assert!(!is_watching(&app));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A linked worktree whose git dir lives outside both the root and the
+    /// shared git dir: both are watched as well as the root.
+    #[tokio::test]
+    async fn start_watches_git_metadata_outside_the_root() {
+        let base = temp("linked");
+        let main = base.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&main, &["worktree", "add", "-q", "-b", "wt", "../wt"]);
+        let wt = base.join("wt");
+        let admin = base.join("admin");
+        std::fs::rename(main.join(".git/worktrees/wt"), &admin).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        std::fs::write(admin.join("commondir"), format!("{}\n", main.join(".git").display())).unwrap();
+        let (app, rx) = app();
+
+        start(app.handle().clone(), wt.clone()).await;
+        assert!(is_watching(&app));
+        std::thread::sleep(Duration::from_millis(300));
+        collect(&rx, |_| false, QUIET);
+
+        // This worktree's HEAD, in its own git dir.
+        let head = std::fs::read_to_string(admin.join("HEAD")).unwrap();
+        std::fs::write(admin.join("HEAD"), head).unwrap();
+        let seen = collect(&rx, |c| c.git_refs, EXPECT);
+        assert_eq!(seen, Changes { git_refs: true, ..Default::default() });
+
+        // A new branch, in the shared refs.
+        git(&wt, &["branch", "other"]);
+        assert!(collect(&rx, |c| c.git_refs, EXPECT).git_refs, "new ref not seen");
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// When a newer root is opened while an older one is still being set up,
+    /// only the newer one ends up watched.
+    #[tokio::test]
+    async fn newest_root_wins() {
+        let (a, b) = (temp("gen-a"), temp("gen-b"));
+        let (app, rx) = app();
+        app.state::<ShellEnv>().get().await; // load once, up front
+
+        let h = app.handle();
+        tokio::join!(start(h.clone(), a.clone()), start(h.clone(), b.clone()));
+        assert!(is_watching(&app));
+        std::thread::sleep(Duration::from_millis(300));
+        collect(&rx, |_| false, QUIET);
+
+        std::fs::write(a.join("x.tf"), "").unwrap();
+        let seen = collect(&rx, |_| false, QUIET);
+        assert!(!seen.any(), "old root still watched: {seen:?}");
+        std::fs::write(b.join("x.tf"), "").unwrap();
+        assert!(collect(&rx, |c| c.worktree, EXPECT).worktree, "new root not watched");
+
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
     }
 }

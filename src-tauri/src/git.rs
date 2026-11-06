@@ -706,7 +706,10 @@ mod tests {
         r.commit("one");
         r.write("b/main.tf", "");
 
-        let app = tauri::test::mock_app();
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![git_is_repo, git_uncommitted, git_log])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
         app.manage(Workspace::default());
         app.manage(ShellEnv::default());
         let set_root = |p: Option<PathBuf>| *app.state::<Workspace>().root.lock().unwrap() = p;
@@ -716,14 +719,18 @@ mod tests {
         assert_eq!(git_uncommitted(app.state(), app.state()).await.unwrap_err(), "No folder is open.");
         assert_eq!(git_log(app.state(), app.state(), 0, 10).await.unwrap_err(), "No folder is open.");
 
+        // Through IPC, as the UI calls them.
         set_root(Some(r.0.clone()));
-        assert!(git_is_repo(app.state(), app.state()).await.unwrap());
-        let u = git_uncommitted(app.state(), app.state()).await.unwrap();
-        assert_eq!(u.modules, [ModuleChange { path: "b".into(), deleted: false, depends_on: vec![] }]);
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let none = serde_json::json!({});
+        assert_eq!(ipc(&webview, "git_is_repo", none.clone()), Ok(true.into()));
+        let u = ipc(&webview, "git_uncommitted", none).unwrap();
+        assert_eq!(u["modules"], serde_json::json!([{ "path": "b", "deleted": false, "dependsOn": [] }]));
         // The page size is clamped to at least one commit.
-        let log = git_log(app.state(), app.state(), 0, 0).await.unwrap();
-        assert_eq!(log.commits.len(), 1);
-        assert_eq!(log.commits[0].subject, "one");
+        let log = ipc(&webview, "git_log", serde_json::json!({ "skip": 0, "limit": 0 })).unwrap();
+        assert_eq!(log["commits"].as_array().unwrap().len(), 1);
+        assert_eq!(log["commits"][0]["subject"], "one");
+        assert_eq!(log["hasMore"], false);
 
         // Other git errors are passed through as-is.
         set_root(Some(r.0.join(".git")));
@@ -740,6 +747,24 @@ mod tests {
             assert_eq!(err, format!("{} is not in a git repository.", dir.display()));
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Call a command through the IPC layer, as the UI does.
+    fn ipc(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let request = tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(webview, request).map(|b| b.deserialize().unwrap())
     }
 }
 

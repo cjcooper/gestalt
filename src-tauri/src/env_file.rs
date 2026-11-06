@@ -260,6 +260,8 @@ F=price$ 5 and a#hash
         assert_eq!(apply("A='open", &mut env).unwrap_err(), "line 1: unterminated single quote");
         assert_eq!(apply("A=\"ends in \\", &mut env).unwrap_err(), "line 1: unterminated double quote");
         assert_eq!(apply("A=${1X}", &mut env).unwrap_err(), "line 1: invalid variable name `${1X}`");
+        assert_eq!(apply("A=\"${1X}\"", &mut env).unwrap_err(), "line 1: invalid variable name `${1X}`");
+        assert_eq!(apply("A=\"x\" junk", &mut env).unwrap_err(), "line 1: unexpected text after closing quote: `junk`");
         assert_eq!(apply("# c\nunset OK 9NO", &mut env).unwrap_err(), "line 2: invalid variable name `9NO`");
     }
 

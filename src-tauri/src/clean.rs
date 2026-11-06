@@ -248,8 +248,27 @@ mod tests {
         assert!(blocking(|| -> u8 { panic!("boom") }).await.is_err());
     }
 
-    #[tokio::test]
-    async fn scan_and_clean_commands() {
+    /// Call a command through the IPC layer, as the UI does.
+    fn ipc(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let request = tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(webview, request).map(|b| b.deserialize().unwrap())
+    }
+
+    #[test]
+    fn scan_and_clean_commands() {
+        use serde_json::json;
         use tauri::Manager;
         let base = std::env::temp_dir().join(format!("gestalt-clean-cmd-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -257,21 +276,27 @@ mod tests {
         fs::write(base.join("app/.terraform/providers/p"), "1234").unwrap();
         fs::write(base.join("app/.terraform.lock.hcl"), "12").unwrap();
         fs::write(base.join("app/main.tf"), "").unwrap();
-        let dir = base.to_string_lossy().into_owned();
 
-        let app = tauri::test::mock_app();
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![clean_scan, clean_caches])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
         app.manage(Runs::default());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
 
-        let missing = base.join("missing").to_string_lossy().into_owned();
-        assert!(clean_scan(missing.clone()).await.unwrap_err().contains("is not a directory"));
-        assert!(clean_caches(app.state(), missing).await.is_err());
+        let missing = json!({ "dir": base.join("missing") });
+        let err = ipc(&webview, "clean_scan", missing.clone()).unwrap_err();
+        assert!(err.as_str().unwrap().contains("is not a directory"), "{err}");
+        assert!(ipc(&webview, "clean_caches", missing).is_err());
 
-        let preview = clean_scan(dir.clone()).await.unwrap();
-        assert_eq!((preview.dirs, preview.files, preview.bytes), (1, 1, 6));
+        let dir = json!({ "dir": base });
+        let preview = ipc(&webview, "clean_scan", dir.clone()).unwrap();
+        assert_eq!((&preview["dirs"], &preview["files"], &preview["bytes"]), (&json!(1), &json!(1), &json!(6)));
         assert!(base.join("app/.terraform").exists());
 
-        let done = clean_caches(app.state(), dir).await.unwrap();
-        assert_eq!((done.dirs, done.files, done.bytes), (1, 1, 6));
+        let done = ipc(&webview, "clean_caches", dir).unwrap();
+        assert_eq!(done["paths"].as_array().unwrap().len(), 2);
+        assert_eq!(done["errors"], json!([]));
         assert!(!base.join("app/.terraform").exists() && !base.join("app/.terraform.lock.hcl").exists());
         assert!(base.join("app/main.tf").exists());
         fs::remove_dir_all(&base).unwrap();
