@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:rust": "cd src-tauri && cargo test",
+    "coverage:rust": "cd src-tauri && cargo llvm-cov --ignore-filename-regex '(src/main\\.rs|src/app\\.rs|src/system_colors/mac\\.rs|src/probes/)' --fail-under-lines 100 --fail-under-functions 100"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
