@@ -54,12 +54,12 @@ pub fn read() -> Option<SystemColors> {
     })
 }
 
-/// Call `changed` (on the main thread) whenever the colours may have changed.
-pub fn observe(changed: impl Fn() + 'static) {
+/// Call [`super::changed`] (on the main thread) whenever the colours may have changed.
+pub fn observe<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     use objc2_app_kit::{NSSystemColorsDidChangeNotification, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification};
     use objc2_foundation::{NSNotificationCenter, NSOperationQueue};
 
-    let block = RcBlock::new(move |_| changed());
+    let block = RcBlock::new(move |_| super::changed(&app));
     let queue = NSOperationQueue::mainQueue();
     unsafe {
         // Accent and highlight changes.
