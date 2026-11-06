@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "test:rust": "cd src-tauri && cargo test",
     "coverage:rust": "cd src-tauri && cargo llvm-cov --ignore-filename-regex '(src/main\\.rs|src/app\\.rs|src/system_colors/mac\\.rs|src/probes/)' --fail-under-lines 100 --fail-under-functions 100"
   },
@@ -17,7 +19,10 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@vitest/coverage-v8": "^5.1.0",
+    "jsdom": "^31.0.0",
+    "typescript": "~6.0.3",
     "vite": "^8.0.16",
-    "typescript": "~6.0.3"
+    "vitest": "^5.1.0"
   }
 }
