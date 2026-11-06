@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const DEBOUNCE: Duration = Duration::from_millis(400);
 
@@ -130,7 +130,7 @@ async fn git_path(root: &Path, env: &EnvMap, flag: &str) -> Option<PathBuf> {
 }
 
 /// (Re)start watching `root`, replacing any previous watch.
-pub async fn start(app: AppHandle, root: PathBuf) {
+pub async fn start<R: Runtime>(app: AppHandle<R>, root: PathBuf) {
     let state = app.state::<WorkspaceWatcher>();
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     // Stop the old watcher right away so it can't report on the old root.
