@@ -37,16 +37,16 @@ const log = (extra: Record<string, unknown> = {}) => ({
 });
 
 let sb: Sidebar;
-let plan: ReturnType<typeof vi.fn>;
-let apply: ReturnType<typeof vi.fn>;
+let plan: ReturnType<typeof vi.fn<(dir: string) => void>>;
+let apply: ReturnType<typeof vi.fn<(dir: string) => void>>;
 let handlers: Record<string, (args?: Record<string, unknown>) => unknown>;
 
 async function setup(h: typeof handlers = {}) {
   handlers = { git_is_repo: () => true, git_log: () => log(), ...h };
   tauri.invoke.mockImplementation(invokeRouter(new Proxy({}, { get: (_, k: string) => handlers[k] })));
   sb = await import("./sidebar");
-  plan = vi.fn();
-  apply = vi.fn();
+  plan = vi.fn<(dir: string) => void>();
+  apply = vi.fn<(dir: string) => void>();
   sb.initSidebar(plan, apply);
 }
 

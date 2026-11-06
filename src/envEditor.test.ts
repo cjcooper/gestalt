@@ -159,7 +159,7 @@ describe("openEnvEditor", () => {
     // Saving while invalid does nothing: the button is disabled, and the
     // handler itself refuses too (e.g. if invoked directly).
     button("Save").click();
-    await button("Save").onclick!.call(button("Save"), new MouseEvent("click"));
+    await button("Save").onclick!.call(button("Save"), new PointerEvent("click"));
     await settle();
     expect(tauri.invoke).toHaveBeenCalledTimes(1);
 

@@ -2,67 +2,26 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
-import { newAnsiState, renderAnsi, stripAnsi, type AnsiState } from "./ansi";
+import { newAnsiState, renderAnsi } from "./ansi";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
 import { initSystemColors } from "./systemColors";
 import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
-
-// ---- Backend types ---------------------------------------------------------
-
-type RunKind = "plan" | "apply" | "import" | "clean";
-
-interface DirEntry {
-  name: string;
-  path: string;
-  isDir: boolean;
-  hasChildren: boolean;
-  isModule: boolean;
-  hasEnvFile: boolean;
-}
-
-interface OutputEvent {
-  runId: number;
-  /** "gestalt" lines are the app's own notes, e.g. which .gestalt.env files applied. */
-  stream: "stdout" | "stderr" | "gestalt";
-  line: string;
-}
-
-interface ExitEvent {
-  runId: number;
-  code: number | null;
-  success: boolean;
-  cancelled: boolean;
-  /** Plan runs only: a saved plan with changes is ready to apply. */
-  hasChanges: boolean | null;
-  error: string | null;
-  /** Whether the requested command itself ran (vs. failing during setup). */
-  started: boolean;
-}
+import {
+  describeClean,
+  formatBytes,
+  planSummary,
+  statusText,
+  type CleanSummary,
+  type DirEntry,
+  type ExitEvent,
+  type OutputEvent,
+  type Run,
+  type RunKind,
+} from "./runs";
 
 // ---- Run state ---------------------------------------------------------------
-
-type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
-
-/** Lifecycle of a plan run's saved plan file. */
-type PlanState = "none" | "ready" | "applied" | "discarded";
-
-interface Run {
-  id: number;
-  dir: string;
-  kind: RunKind;
-  status: RunStatus;
-  lines: { stream: string; line: string }[];
-  exit?: ExitEvent;
-  planState: PlanState;
-  /** Started from "Apply…": prompt to apply once the plan finishes. */
-  applyWhenReady?: boolean;
-  /** Clean runs: what was freed, shown as the status. */
-  summary?: string;
-  /** Colour state each stream left set, while the run is shown. */
-  ansi: Map<string, AnsiState>;
-}
 
 const runs = new Map<number, Run>();
 let selectedRunId: number | null = null;
@@ -85,15 +44,6 @@ function relName(dir: string): string {
 
 function baseName(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
-}
-
-/** The "Plan: 1 to add, 0 to change, 0 to destroy." line, if tofu printed one. */
-function planSummary(run: Run): string | undefined {
-  for (let i = run.lines.length - 1; i >= 0; i--) {
-    const l = stripAnsi(run.lines[i].line).trim();
-    if (/^Plan: \d+ to /.test(l)) return l;
-  }
-  return undefined;
 }
 
 function registerRun(run: Run) {
@@ -134,31 +84,6 @@ const startPlan = (dir: string, applyWhenReady = false) =>
 async function startImport(dir: string) {
   const request: ImportRequest | null = await openImportDialog(dir, relName(dir));
   if (request) await startRun(dir, "import", "run_import", { dir, request });
-}
-
-interface CleanSummary {
-  paths: string[];
-  dirs: number;
-  files: number;
-  bytes: number;
-  errors: string[];
-}
-
-function formatBytes(n: number): string {
-  const units = ["bytes", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i++;
-  }
-  return i === 0 ? `${n} ${units[0]}` : `${n.toFixed(1)} ${units[i]}`;
-}
-
-function describeClean(s: CleanSummary): string {
-  const parts = [];
-  if (s.dirs) parts.push(`${s.dirs} .terraform folder${s.dirs === 1 ? "" : "s"}`);
-  if (s.files) parts.push(`${s.files} .terraform.lock.hcl file${s.files === 1 ? "" : "s"}`);
-  return `${parts.join(" and ")} (${formatBytes(s.bytes)})`;
 }
 
 /**
@@ -255,25 +180,6 @@ function handleExit(run: Run, e: ExitEvent) {
 }
 
 // ---- Run rendering ---------------------------------------------------------
-
-function statusText(run: Run): string {
-  if (run.kind === "clean") {
-    if (run.status === "running") return "cleaning…";
-    return run.status === "failed" && run.summary ? `${run.summary}, with errors` : (run.summary ?? run.status);
-  }
-  if (run.status === "running") return run.planState === "applied" ? "applying…" : "running…";
-  if (run.planState === "applied" && run.status === "succeeded") {
-    const s = planSummary(run);
-    return s ? `applied — ${s}` : "applied";
-  }
-  // Only a plan's exit carries hasChanges.
-  if (run.exit?.hasChanges != null && run.status === "succeeded") {
-    if (!run.exit?.hasChanges) return "no changes";
-    const s = planSummary(run) ?? "changes pending";
-    return run.planState === "ready" ? (run.kind === "apply" ? `${s} (not applied)` : s) : `${s} (discarded)`;
-  }
-  return run.exit?.code != null && run.status === "failed" ? `failed (exit ${run.exit.code})` : run.status;
-}
 
 function renderTabs() {
   const tabs = $("run-tabs");
