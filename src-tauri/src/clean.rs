@@ -289,6 +289,10 @@ mod tests {
         assert!(err.as_str().unwrap().contains("is not a directory"), "{err}");
         assert!(ipc(&webview, "clean_caches", missing).is_err());
 
+        // Malformed calls are rejected before the command body runs.
+        assert!(ipc(&webview, "clean_scan", json!({})).is_err());
+        assert!(ipc(&webview, "clean_caches", json!({})).is_err());
+
         let dir = json!({ "dir": base });
         let preview = ipc(&webview, "clean_scan", dir.clone()).unwrap();
         assert_eq!((&preview["dirs"], &preview["files"], &preview["bytes"]), (&json!(1), &json!(1), &json!(6)));

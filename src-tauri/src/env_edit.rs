@@ -300,6 +300,8 @@ mod tests {
         assert!(env_file_read(app.state(), app.state(), arg(&root.join("d"))).await.is_err());
         let err = ipc(&webview, "env_file_read", serde_json::json!({ "dir": root.parent().unwrap() })).unwrap_err();
         assert!(err.as_str().unwrap().contains("is not a folder inside"), "{err}");
+        // A malformed call is rejected before the command body runs.
+        assert!(ipc(&webview, "env_file_read", serde_json::json!({})).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

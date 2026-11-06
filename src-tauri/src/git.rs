@@ -638,10 +638,8 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("gestalt-nogit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        // Only meaningful if the temp dir isn't itself inside a repo.
-        if !is_repo(&dir, &EnvMap::new()).await {
-            assert!(first_parent_log(&dir, &EnvMap::new(), 0, 10).await.is_err());
-        }
+        assert!(!is_repo(&dir, &EnvMap::new()).await, "test needs the temp dir to be outside any git repo");
+        assert!(first_parent_log(&dir, &EnvMap::new(), 0, 10).await.is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -740,13 +738,38 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gestalt-git-cmd-nogit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         set_root(Some(dir.clone()));
-        // Only meaningful if the temp dir isn't itself inside a repo.
-        if !is_repo(&dir, &EnvMap::new()).await {
-            assert!(!git_is_repo(app.state(), app.state()).await.unwrap());
-            let err = git_log(app.state(), app.state(), 0, 10).await.unwrap_err();
-            assert_eq!(err, format!("{} is not in a git repository.", dir.display()));
-        }
+        assert!(!is_repo(&dir, &EnvMap::new()).await, "test needs the temp dir to be outside any git repo");
+        assert!(!git_is_repo(app.state(), app.state()).await.unwrap());
+        let err = git_log(app.state(), app.state(), 0, 10).await.unwrap_err();
+        assert_eq!(err, format!("{} is not in a git repository.", dir.display()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Calls missing app state or arguments fail instead of running.
+    #[test]
+    fn commands_reject_bad_invocations() {
+        use tauri::Manager;
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![git_is_repo, git_uncommitted, git_log])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let args = serde_json::json!({ "skip": 0, "limit": 1 });
+        let fails_with = |cmd: &str, args: &serde_json::Value, msg: &str| {
+            let err = ipc(&webview, cmd, args.clone()).unwrap_err();
+            assert!(err.as_str().unwrap().contains(msg), "{cmd}: {err}");
+        };
+        // Neither state, then only the workspace.
+        for _ in 0..2 {
+            for cmd in ["git_is_repo", "git_uncommitted", "git_log"] {
+                fails_with(cmd, &args, "state not managed");
+            }
+            app.manage(Workspace::default());
+        }
+        // Both states, but no paging arguments.
+        app.manage(ShellEnv::preloaded(EnvMap::new()));
+        fails_with("git_log", &serde_json::json!({ "limit": 1 }), "missing required key skip");
+        fails_with("git_log", &serde_json::json!({ "skip": 0 }), "missing required key limit");
     }
 
     /// Call a command through the IPC layer, as the UI does.

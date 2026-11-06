@@ -14,9 +14,24 @@ opened folder. The next plan re-runs `tofu init` to download them again.
 ```sh
 pnpm install
 pnpm tauri dev
-cd src-tauri && cargo test
+pnpm test               # frontend (Vitest)
+pnpm test:rust          # backend (cargo test)
 pnpm tauri build        # .app / .dmg in src-tauri/target/release/bundle
 ```
+
+### Coverage
+
+Both halves are held at 100%:
+
+```sh
+pnpm coverage           # frontend: lines, branches, functions, statements
+pnpm coverage:rust      # backend: lines and functions (needs cargo-llvm-cov)
+```
+
+The Rust check leaves out only code with nothing to assert on, kept in its own
+files for that reason: `main.rs`, `app.rs` (the Tauri builder),
+`system_colors/mac.rs` (AppKit calls) and `src/probes/` (manual `#[ignore]`
+checks against real repos). New logic belongs elsewhere, under test.
 
 ### Code signing (macOS)
 
