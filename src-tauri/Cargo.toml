@@ -43,3 +43,7 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+# Mock runtime (tauri::test) for exercising commands that take AppHandle/State.
+tauri = { version = "2", features = ["test"] }

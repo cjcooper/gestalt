@@ -167,8 +167,7 @@ pub fn env_file_save(
     }
     // Write-then-rename so a crash never leaves a half-written file.
     let tmp = dir.join(format!("{FILE_NAME}.tmp-{}", std::process::id()));
-    std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
+    std::fs::write(&tmp, content).and_then(|()| std::fs::rename(&tmp, &path)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         e.to_string()
     })
@@ -221,6 +220,196 @@ mod tests {
         assert!(locate(&ws, base.to_str().unwrap()).is_err());
         assert!(locate(&ws, base.join("root/a/../..").to_str().unwrap()).is_err());
 
+        // Missing folder, and a root that has since gone away.
+        let missing = base.join("root/missing");
+        assert!(locate(&ws, missing.to_str().unwrap()).unwrap_err().starts_with(&*missing.to_string_lossy()));
+        *ws.root.lock().unwrap() = Some(base.join("gone"));
+        assert!(locate(&ws, inside.to_str().unwrap()).unwrap_err().starts_with(&*base.join("gone").to_string_lossy()));
+
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    use tauri::Manager;
+
+    /// Temp folder (canonical) and a mock app with it open as the workspace root.
+    fn setup(name: &str) -> (PathBuf, tauri::App<tauri::test::MockRuntime>) {
+        let base = std::env::temp_dir().join(format!("gestalt-envedit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let base = base.canonicalize().unwrap();
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![env_file_read])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(Workspace { root: Some(base.clone()).into() });
+        app.manage(ShellEnv::default());
+        (base, app)
+    }
+
+    fn arg(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test]
+    async fn read_reports_what_parent_files_set() {
+        let (root, app) = setup("read");
+        let leaf = root.join("a/b/c");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::create_dir_all(root.join("x/y")).unwrap();
+        std::fs::write(root.join(FILE_NAME), "GESTALT_T_SHARED=root\nGESTALT_T_GONE=1\nunset GESTALT_T_BACK\nGESTALT_T_REGION=us\n").unwrap();
+        std::fs::write(root.join("a").join(FILE_NAME), "unset GESTALT_T_GONE\nGESTALT_T_BACK=again\nGESTALT_T_NAME=${GESTALT_T_REGION}-a\n").unwrap();
+        std::fs::write(root.join("a/b").join(FILE_NAME), [0xff, 0xfe]).unwrap(); // unreadable
+        std::fs::write(leaf.join(FILE_NAME), "OWN=1\n").unwrap();
+        std::fs::write(root.join("x").join(FILE_NAME), "not a pair\n").unwrap();
+
+        let ctx = env_file_read(app.state(), app.state(), arg(&leaf)).await.unwrap();
+        assert_eq!(ctx.rel_path, "a/b/c/.gestalt.env");
+        assert!(ctx.exists);
+        assert_eq!(ctx.content, "OWN=1\n");
+        let inherited: Vec<(&str, &str, &str)> =
+            ctx.inherited.iter().map(|i| (i.name.as_str(), i.value.as_str(), i.source.as_str())).collect();
+        assert_eq!(
+            inherited,
+            [
+                ("GESTALT_T_BACK", "again", "a/.gestalt.env"),
+                ("GESTALT_T_NAME", "us-a", "a/.gestalt.env"),
+                ("GESTALT_T_REGION", "us", ".gestalt.env"),
+                ("GESTALT_T_SHARED", "root", ".gestalt.env"),
+            ]
+        );
+        let unset: Vec<(&str, &str)> = ctx.inherited_unset.iter().map(|u| (u.name.as_str(), u.source.as_str())).collect();
+        assert_eq!(unset, [("GESTALT_T_GONE", "a/.gestalt.env")]);
+        assert_eq!(ctx.parent_errors.len(), 1);
+        assert!(ctx.parent_errors[0].starts_with("a/b/.gestalt.env: "), "{:?}", ctx.parent_errors);
+
+        // No file of its own; a parent with a syntax error.
+        let ctx = env_file_read(app.state(), app.state(), arg(&root.join("x/y"))).await.unwrap();
+        assert!(!ctx.exists && ctx.content.is_empty());
+        assert_eq!(ctx.parent_errors, ["x/.gestalt.env: line 1: expected KEY=value"]);
+
+        // Through IPC, as the UI calls it. The root's own file isn't a parent of itself.
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let ctx = ipc(&webview, "env_file_read", serde_json::json!({ "dir": root })).unwrap();
+        assert_eq!(ctx["relPath"], ".gestalt.env");
+        assert_eq!(ctx["exists"], true);
+        assert_eq!(ctx["inherited"], serde_json::json!([]));
+        assert_eq!(ctx["parentErrors"], serde_json::json!([]));
+
+        // Unreadable file, and a folder outside the root.
+        std::fs::create_dir_all(root.join("d").join(FILE_NAME)).unwrap();
+        assert!(env_file_read(app.state(), app.state(), arg(&root.join("d"))).await.is_err());
+        let err = ipc(&webview, "env_file_read", serde_json::json!({ "dir": root.parent().unwrap() })).unwrap_err();
+        assert!(err.as_str().unwrap().contains("is not a folder inside"), "{err}");
+        // A malformed call is rejected before the command body runs.
+        assert!(ipc(&webview, "env_file_read", serde_json::json!({})).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Call a command through the IPC layer, as the UI does.
+    fn ipc(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let request = tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(webview, request).map(|b| b.deserialize().unwrap())
+    }
+
+    #[test]
+    fn validate_returns_the_first_error() {
+        assert_eq!(env_file_validate("A=1\n# ok\n".into()), None);
+        assert_eq!(env_file_validate("A=1\nB\n".into()).as_deref(), Some("line 2: expected KEY=value"));
+    }
+
+    #[test]
+    fn save_creates_replaces_and_refuses_stale_or_invalid() {
+        let (root, app) = setup("save");
+        let path = root.join(FILE_NAME);
+        let save = |content: &str, expected: Option<&str>| {
+            env_file_save(app.state(), arg(&root), content.into(), expected.map(String::from))
+        };
+
+        save("A=1\n", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "A=1\n");
+        save("A=2\n", Some("A=1\n")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "A=2\n");
+        // No temp file left behind.
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+
+        assert!(save("A=3\n", Some("A=1\n")).unwrap_err().contains("changed on disk"));
+        assert!(save("A=3\n", None).unwrap_err().contains("changed on disk"));
+        assert_eq!(save("oops\n", Some("A=2\n")).unwrap_err(), "Not saved — line 1: expected KEY=value");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "A=2\n");
+        // Outside the root.
+        assert!(env_file_save(app.state(), arg(root.parent().unwrap()), "A=1\n".into(), None).is_err());
+        // Something unreadable in the way.
+        std::fs::create_dir_all(root.join("d").join(FILE_NAME)).unwrap();
+        let err = env_file_save(app.state(), arg(&root.join("d")), "A=1\n".into(), None).unwrap_err();
+        assert!(err.starts_with(&*root.join("d").join(FILE_NAME).to_string_lossy()), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_through_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, app) = setup("link");
+        let target = root.join("shared.env");
+        std::fs::write(&target, "A=1\n").unwrap();
+        let link = root.join(FILE_NAME);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        env_file_save(app.state(), arg(&root), "A=2\n".into(), Some("A=1\n".into())).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "A=2\n");
+
+        // A read-only target: the write error is reported.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(env_file_save(app.state(), arg(&root), "A=3\n".into(), Some("A=2\n".into())).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "A=2\n");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_and_delete_report_filesystem_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, app) = setup("readonly");
+        let dir = root.join("locked");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE_NAME), "A=1\n").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let saved = env_file_save(app.state(), arg(&dir), "A=2\n".into(), Some("A=1\n".into()));
+        let deleted = env_file_delete(app.state(), arg(&dir), "A=1\n".into());
+        let leftovers = std::fs::read_dir(&dir).unwrap().count();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(saved.is_err() && deleted.is_err());
+        assert_eq!(leftovers, 1);
+        assert_eq!(std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(), "A=1\n");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn delete_removes_only_the_expected_content() {
+        let (root, app) = setup("delete");
+        let path = root.join(FILE_NAME);
+        std::fs::write(&path, "A=1\n").unwrap();
+
+        assert!(env_file_delete(app.state(), arg(&root), "A=0\n".into()).unwrap_err().contains("changed on disk"));
+        assert!(path.exists());
+        env_file_delete(app.state(), arg(&root), "A=1\n".into()).unwrap();
+        assert!(!path.exists());
+        assert!(env_file_delete(app.state(), arg(root.parent().unwrap()), "A=1\n".into()).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

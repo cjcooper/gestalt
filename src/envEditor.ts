@@ -25,7 +25,7 @@ const TEMPLATE = `# Environment for tofu runs in this folder and every folder be
 
 const h = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
-  props: Partial<HTMLElementTagNameMap[K]> & { class?: string } = {},
+  props: Partial<HTMLElementTagNameMap[K]> & { class?: string },
   ...children: (Node | string)[]
 ): HTMLElementTagNameMap[K] => {
   const el = document.createElement(tag);

@@ -190,8 +190,9 @@ function refBadge(ref: string): HTMLElement {
 /** Repo top level of the loaded list, for turning module paths into local folders. */
 let repoRoot: string | null = null;
 type FolderAction = (dir: string) => void;
-let onPlan: FolderAction = () => {};
-let onApply: FolderAction = () => {};
+// Set by initSidebar, which runs before any folder list can be rendered.
+let onPlan!: FolderAction;
+let onApply!: FolderAction;
 
 function localFolder(path: string): string | null {
   if (!repoRoot) return null;

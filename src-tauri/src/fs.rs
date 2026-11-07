@@ -67,3 +67,83 @@ pub fn list_dir(path: &Path) -> Result<Vec<DirEntry>, String> {
     out.sort_by_key(|e| (!e.is_dir, e.name.to_lowercase()));
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn lists_visible_entries_folders_first() {
+        let base = std::env::temp_dir().join(format!("gestalt-fs-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let mk = |rel: &str| {
+            let p = base.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "").unwrap();
+        };
+        mk("Zeta/main.tf");
+        mk("alpha/.gestalt.env");
+        mk("alpha/.hidden");
+        mk("empty/.DS_Store");
+        mk("b.tf");
+        mk("A.md");
+        mk(".gestalt.env");
+        mk(".secret");
+        mk(".git/HEAD");
+        mk("node_modules/x/index.js");
+
+        let entries = list_dir(&base).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "empty", "Zeta", ".gestalt.env", "A.md", "b.tf"]);
+
+        let get = |n: &str| entries.iter().find(|e| e.name == n).unwrap();
+        let zeta = get("Zeta");
+        assert!(zeta.is_dir && zeta.is_module && zeta.has_children && !zeta.has_env_file);
+        assert_eq!(zeta.path, base.join("Zeta").to_string_lossy());
+        let alpha = get("alpha");
+        assert!(alpha.is_dir && !alpha.is_module && alpha.has_children && alpha.has_env_file);
+        // Only hidden entries inside: no expand arrow.
+        assert!(!get("empty").has_children);
+        let file = get("b.tf");
+        assert!(!file.is_dir && !file.has_children && !file.is_module && !file.has_env_file);
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follows_symlinks_and_skips_broken_ones() {
+        let base = std::env::temp_dir().join(format!("gestalt-fs-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("real")).unwrap();
+        fs::write(base.join("real/main.tf"), "").unwrap();
+        fs::create_dir_all(base.join("tree")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("tree/linked")).unwrap();
+        std::os::unix::fs::symlink(base.join("nowhere"), base.join("tree/broken")).unwrap();
+
+        let entries = list_dir(&base.join("tree")).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].name == "linked" && entries[0].is_dir && entries[0].is_module);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn rejects_non_directories() {
+        let base = std::env::temp_dir().join(format!("gestalt-fs-notdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("f"), "").unwrap();
+        assert!(list_dir(&base.join("f")).unwrap_err().contains("is not a directory"));
+        assert!(list_dir(&base.join("missing")).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn entry_for_a_path_without_a_file_name() {
+        // `/` has no file name: the display path is used instead.
+        let e = entry(Path::new("/"));
+        assert_eq!(e.name, "/");
+        assert!(e.is_dir && e.has_children);
+    }
+}

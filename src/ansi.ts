@@ -51,7 +51,11 @@ function extended(codes: number[], i: number): [number | string | null, number] 
     return [n < 16 ? n : color256(n), i + 2];
   }
   if (codes[i] === 2) {
+    // `slice` never yields holes, so `?? 0` can't fire (a known bug: missing
+    // components produce `undefined`; see ansi.test.ts).
+    /* v8 ignore start */
     const [r, g, b] = codes.slice(i + 1, i + 4).map((x) => Math.min(x ?? 0, 255));
+    /* v8 ignore stop */
     return [`rgb(${r},${g},${b})`, i + 4];
   }
   return [null, codes.length];

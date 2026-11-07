@@ -8,7 +8,7 @@
 //! high-contrast variants are used.
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Runtime};
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -29,89 +29,7 @@ pub struct SystemColors {
 pub const CHANGED_EVENT: &str = "system://colors";
 
 #[cfg(target_os = "macos")]
-mod mac {
-    use super::{Palette, SystemColors};
-    use block2::RcBlock;
-    use objc2_app_kit::{
-        NSAppearance, NSAppearanceNameAccessibilityHighContrastAqua,
-        NSAppearanceNameAccessibilityHighContrastDarkAqua, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-        NSColor, NSColorSpace, NSWorkspace,
-    };
-    use objc2_foundation::{NSUserDefaults, ns_string};
-    use std::cell::RefCell;
-
-    fn hex(c: &NSColor) -> Option<String> {
-        let c = c.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
-        let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        Some(format!(
-            "#{:02x}{:02x}{:02x}",
-            byte(c.redComponent()),
-            byte(c.greenComponent()),
-            byte(c.blueComponent())
-        ))
-    }
-
-    /// Resolve the (dynamic) system colours as drawn in one appearance.
-    fn palette(appearance: &NSAppearance, multicolor: bool) -> Palette {
-        let out = RefCell::new(None);
-        let block = RcBlock::new(|| {
-            let accent = if multicolor { None } else { hex(&NSColor::controlAccentColor()) };
-            let highlight = hex(&NSColor::selectedTextBackgroundColor()).unwrap_or_default();
-            *out.borrow_mut() = Some(Palette { accent, highlight });
-        });
-        appearance.performAsCurrentDrawingAppearance(&block);
-        drop(block);
-        out.into_inner().unwrap_or(Palette { accent: None, highlight: String::new() })
-    }
-
-    pub fn read() -> Option<SystemColors> {
-        // No AppleAccentColor default = "Multicolor".
-        let multicolor = NSUserDefaults::standardUserDefaults()
-            .objectForKey(ns_string!("AppleAccentColor"))
-            .is_none();
-        let contrast = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast();
-        let (light, dark) = unsafe {
-            if contrast {
-                (NSAppearanceNameAccessibilityHighContrastAqua, NSAppearanceNameAccessibilityHighContrastDarkAqua)
-            } else {
-                (NSAppearanceNameAqua, NSAppearanceNameDarkAqua)
-            }
-        };
-        Some(SystemColors {
-            light: palette(&*NSAppearance::appearanceNamed(light)?, multicolor),
-            dark: palette(&*NSAppearance::appearanceNamed(dark)?, multicolor),
-        })
-    }
-
-    /// Call `changed` (on the main thread) whenever the colours may have changed.
-    pub fn observe(changed: impl Fn() + 'static) {
-        use objc2_app_kit::{NSSystemColorsDidChangeNotification, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification};
-        use objc2_foundation::{NSNotificationCenter, NSOperationQueue};
-
-        let block = RcBlock::new(move |_| changed());
-        let queue = NSOperationQueue::mainQueue();
-        unsafe {
-            // Accent and highlight changes.
-            let token = NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-                Some(NSSystemColorsDidChangeNotification),
-                None,
-                Some(&queue),
-                &block,
-            );
-            std::mem::forget(token); // observe for the app's lifetime
-            // Increase Contrast.
-            let token = NSWorkspace::sharedWorkspace()
-                .notificationCenter()
-                .addObserverForName_object_queue_usingBlock(
-                    Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
-                    None,
-                    Some(&queue),
-                    &block,
-                );
-            std::mem::forget(token);
-        }
-    }
-}
+mod mac;
 
 /// Sync, so Tauri runs it on the main thread, as AppKit wants.
 #[tauri::command]
@@ -123,17 +41,84 @@ pub fn system_colors() -> Option<SystemColors> {
 }
 
 /// Push [`CHANGED_EVENT`] to the UI whenever the user changes these settings.
-pub fn watch(app: &AppHandle) {
+pub fn watch<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
-    {
-        use tauri::Emitter;
-        let app = app.clone();
-        mac::observe(move || {
-            if let Err(e) = app.emit(CHANGED_EVENT, mac::read()) {
-                eprintln!("system colours: {e}");
-            }
-        });
-    }
+    mac::observe(app.clone());
     #[cfg(not(target_os = "macos"))]
     let _ = app;
+}
+
+/// The settings changed: send the UI the current colours.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn changed<R: Runtime>(app: &AppHandle<R>) {
+    emit(app, system_colors());
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn emit<R: Runtime>(app: &AppHandle<R>, payload: impl Serialize + Clone) {
+    if let Err(e) = app.emit(CHANGED_EVENT, payload) {
+        eprintln!("system colours: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tauri::Listener;
+
+    fn hex(s: &str) -> bool {
+        s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_both_palettes_as_hex() {
+        let colors = system_colors().expect("macOS colours");
+        for p in [&colors.light, &colors.dark] {
+            assert!(hex(&p.highlight), "{p:?}");
+            assert!(p.accent.as_deref().is_none_or(hex), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn serializes_for_the_ui() {
+        let p = |a: Option<&str>| Palette { accent: a.map(Into::into), highlight: "#aabbcc".into() };
+        let colors = SystemColors { light: p(Some("#007aff")), dark: p(None) };
+        assert_eq!(
+            serde_json::to_value(&colors).unwrap(),
+            serde_json::json!({
+                "light": {"accent": "#007aff", "highlight": "#aabbcc"},
+                "dark": {"accent": null, "highlight": "#aabbcc"},
+            })
+        );
+    }
+
+    #[test]
+    fn emits_current_colours_on_change() {
+        let app = tauri::test::mock_app();
+        // Registering the observers must not emit anything by itself.
+        watch(app.handle());
+        let (tx, rx) = mpsc::channel();
+        app.listen_any(CHANGED_EVENT, move |e| tx.send(e.payload().to_string()).unwrap());
+
+        changed(app.handle());
+        let payload = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(payload, serde_json::to_string(&system_colors()).unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_failed_emit_is_only_logged() {
+        let app = tauri::test::mock_app();
+        let (tx, rx) = mpsc::channel();
+        app.listen_any(CHANGED_EVENT, move |e| tx.send(e.payload().to_string()).unwrap());
+        // JSON maps need string keys, so this can't be serialized.
+        emit(app.handle(), std::collections::BTreeMap::from([((1, 2), 3)]));
+        emit(app.handle(), "next");
+        // Only the second one arrives.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "\"next\"");
+        assert!(rx.try_recv().is_err());
+    }
 }

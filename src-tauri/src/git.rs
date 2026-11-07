@@ -88,13 +88,17 @@ fn git_cmd(dir: &Path, env: &EnvMap) -> Command {
     cmd
 }
 
+fn run_failed(e: std::io::Error) -> String {
+    format!("Failed to run git: {e}")
+}
+
 async fn git(dir: &Path, env: &EnvMap, args: &[&str]) -> Result<String, String> {
     let out = git_cmd(dir, env)
         .args(args)
         .stdin(Stdio::null())
         .output()
         .await
-        .map_err(|e| format!("Failed to run git: {e}"))?;
+        .map_err(run_failed)?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
@@ -155,14 +159,14 @@ async fn object_types(dir: &Path, env: &EnvMap, specs: &[String]) -> Result<Vec<
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("Failed to run git: {e}"))?;
+        .map_err(run_failed)?;
     let input = specs.join("\n") + "\n";
     let mut stdin = child.stdin.take().unwrap();
     // Write concurrently with reading so a large batch can't deadlock on pipes.
     let writer = tokio::spawn(async move {
         let _ = stdin.write_all(input.as_bytes()).await;
     });
-    let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().await.map_err(run_failed)?;
     let _ = writer.await;
     let types: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -634,31 +638,159 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("gestalt-nogit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        // Only meaningful if the temp dir isn't itself inside a repo.
-        if !is_repo(&dir, &EnvMap::new()).await {
-            assert!(first_parent_log(&dir, &EnvMap::new(), 0, 10).await.is_err());
-        }
+        assert!(!is_repo(&dir, &EnvMap::new()).await, "test needs the temp dir to be outside any git repo");
+        assert!(first_parent_log(&dir, &EnvMap::new(), 0, 10).await.is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn malformed_log_records_are_skipped() {
+        let good = format!("{RECORD}h{FIELD}s{FIELD}{FIELD}n{FIELD}e{FIELD}d{FIELD}subj{FIELD}{FIELD}\n\na/main.tf\n");
+        let out = format!("{RECORD}truncated{FIELD}record{good}");
+        let parsed = parse_log(&out);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0.subject, "subj");
+        assert!(parsed[0].0.parents.is_empty() && parsed[0].0.refs.is_empty());
+        assert_eq!(parsed[0].1, ["a/main.tf"]);
+    }
+
+    #[tokio::test]
+    async fn git_that_cannot_run_is_an_error() {
+        let r = Repo::new("git-nobin");
+        // The command's own PATH is used to find git.
+        let env: EnvMap = [("PATH".into(), "/nonexistent".into())].into_iter().collect();
+        let err = git(&r.0, &env, &["status"]).await.unwrap_err();
+        assert!(err.starts_with("Failed to run git: "), "{err}");
+        let err = object_types(&r.0, &env, &["HEAD:".into()]).await.unwrap_err();
+        assert!(err.starts_with("Failed to run git: "), "{err}");
+        assert!(first_parent_log(&r.0, &env, 0, 10).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn object_types_checks_the_result_count() {
+        let r = Repo::new("git-objtypes");
+        r.write("a/main.tf", "");
+        r.commit("one");
+        let env = EnvMap::new();
+        let types = object_types(&r.0, &env, &["HEAD:a/main.tf".into(), "HEAD:a".into(), "HEAD:nope".into()]).await.unwrap();
+        assert_eq!(types, ["blob", "tree", "missing"]);
+        // A spec with a newline is read by git as two.
+        let err = object_types(&r.0, &env, &["HEAD:a\nHEAD:b".into()]).await.unwrap_err();
+        assert!(err.contains("unexpected number of results"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn repo_without_commits() {
+        let r = Repo::new("git-unborn");
+        r.write("a/main.tf", "");
+        r.write("b/main.tf", "");
+        r.write("notes.md", "");
+        r.git(&["add", "a/main.tf"]);
+
+        let log = first_parent_log(&r.0, &EnvMap::new(), 0, 10).await.unwrap();
+        assert!(log.commits.is_empty() && !log.has_more && !log.remote_has_changes);
+        assert_eq!(log.branch.as_deref(), Some("main"));
+        let u = log.uncommitted.unwrap();
+        // Staged and untracked files both count.
+        assert_eq!(u.file_count, 3);
+        assert_eq!(u.modules.iter().map(|m| m.path.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn commands_use_the_open_folder() {
+        use tauri::Manager;
+        let r = Repo::new("git-commands");
+        r.write("a/main.tf", "");
+        r.commit("one");
+        r.write("b/main.tf", "");
+
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![git_is_repo, git_uncommitted, git_log])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(Workspace::default());
+        app.manage(ShellEnv::default());
+        let set_root = |p: Option<PathBuf>| *app.state::<Workspace>().root.lock().unwrap() = p;
+
+        // Nothing open.
+        assert!(!git_is_repo(app.state(), app.state()).await.unwrap());
+        assert_eq!(git_uncommitted(app.state(), app.state()).await.unwrap_err(), "No folder is open.");
+        assert_eq!(git_log(app.state(), app.state(), 0, 10).await.unwrap_err(), "No folder is open.");
+
+        // Through IPC, as the UI calls them.
+        set_root(Some(r.0.clone()));
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let none = serde_json::json!({});
+        assert_eq!(ipc(&webview, "git_is_repo", none.clone()), Ok(true.into()));
+        let u = ipc(&webview, "git_uncommitted", none).unwrap();
+        assert_eq!(u["modules"], serde_json::json!([{ "path": "b", "deleted": false, "dependsOn": [] }]));
+        // The page size is clamped to at least one commit.
+        let log = ipc(&webview, "git_log", serde_json::json!({ "skip": 0, "limit": 0 })).unwrap();
+        assert_eq!(log["commits"].as_array().unwrap().len(), 1);
+        assert_eq!(log["commits"][0]["subject"], "one");
+        assert_eq!(log["hasMore"], false);
+
+        // Other git errors are passed through as-is.
+        set_root(Some(r.0.join(".git")));
+        let err = git_log(app.state(), app.state(), 0, 10).await.unwrap_err();
+        assert!(!err.contains("is not in a git repository"), "{err}");
+
+        let dir = std::env::temp_dir().join(format!("gestalt-git-cmd-nogit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_root(Some(dir.clone()));
+        assert!(!is_repo(&dir, &EnvMap::new()).await, "test needs the temp dir to be outside any git repo");
+        assert!(!git_is_repo(app.state(), app.state()).await.unwrap());
+        let err = git_log(app.state(), app.state(), 0, 10).await.unwrap_err();
+        assert_eq!(err, format!("{} is not in a git repository.", dir.display()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Calls missing app state or arguments fail instead of running.
+    #[test]
+    fn commands_reject_bad_invocations() {
+        use tauri::Manager;
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![git_is_repo, git_uncommitted, git_log])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let args = serde_json::json!({ "skip": 0, "limit": 1 });
+        let fails_with = |cmd: &str, args: &serde_json::Value, msg: &str| {
+            let err = ipc(&webview, cmd, args.clone()).unwrap_err();
+            assert!(err.as_str().unwrap().contains(msg), "{cmd}: {err}");
+        };
+        // Neither state, then only the workspace.
+        for _ in 0..2 {
+            for cmd in ["git_is_repo", "git_uncommitted", "git_log"] {
+                fails_with(cmd, &args, "state not managed");
+            }
+            app.manage(Workspace::default());
+        }
+        // Both states, but no paging arguments.
+        app.manage(ShellEnv::preloaded(EnvMap::new()));
+        fails_with("git_log", &serde_json::json!({ "limit": 1 }), "missing required key skip");
+        fails_with("git_log", &serde_json::json!({ "skip": 0 }), "missing required key limit");
+    }
+
+    /// Call a command through the IPC layer, as the UI does.
+    fn ipc(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let request = tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(webview, request).map(|b| b.deserialize().unwrap())
     }
 }
 
-/// Manual check against a real repo:
-/// `GESTALT_GIT_DIR=/path/to/repo cargo test print_real_log -- --ignored --nocapture`
 #[cfg(test)]
-#[tokio::test]
-#[ignore]
-async fn print_real_log() {
-    let dir = std::env::var("GESTALT_GIT_DIR").expect("set GESTALT_GIT_DIR");
-    let start = std::time::Instant::now();
-    let log = first_parent_log(Path::new(&dir), &EnvMap::new(), 0, 200).await.unwrap();
-    println!("{} commits in {:?}, remote_has_changes={}", log.commits.len(), start.elapsed(), log.remote_has_changes);
-    for c in log.commits.iter().take(12) {
-        println!("{} {}", c.short_hash, c.subject);
-        for m in &c.modules {
-            println!("    {}{}{}", m.path, if m.deleted { "  (deleted)" } else { "" },
-                if m.depends_on.is_empty() { String::new() } else { format!("   <- after {}", m.depends_on.join(", ")) });
-        }
-    }
-    let deleted: Vec<_> = log.commits.iter().flat_map(|c| c.modules.iter().filter(|m| m.deleted).map(move |m| (&c.short_hash, &m.path))).collect();
-    println!("deleted in page: {deleted:?}");
-}
+#[path = "probes/git.rs"]
+mod probe;
