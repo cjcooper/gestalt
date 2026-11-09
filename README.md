@@ -113,6 +113,15 @@ Making the dmg drives Finder with AppleScript; the first run asks to let your
 terminal control Finder. If it fails with "Not authorized to send Apple events
 to Finder", allow it in System Settings → Privacy & Security → Automation.
 
+If `pnpm tauri build` fails with "Failed to create app Assets.car … Bad file
+descriptor", stale Xcode asset-catalog helpers are to blame.
+`build-signed.sh` clears them before building; by hand:
+
+```sh
+killall -9 ibtoold actool AssetCatalogSimulatorAgent IBAgent-macOS 2>/dev/null
+xcrun simctl shutdown all
+```
+
 Never commit the `.p8` key or the password (`*.p8` and `private_keys/` are
 git-ignored).
 
