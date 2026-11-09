@@ -12,6 +12,11 @@
 #   scripts/build-signed.sh --no-notarize    sign only, no bump (quick local check)
 # Other arguments go to `pnpm tauri build`.
 #
+# Output: src-tauri/target/release/bundle/dmg/Gestalt_<version>_aarch64.dmg
+# plus a .sha256 next to it (computed after stapling). Run on an Apple
+# Silicon Mac; the Homebrew cask expects that exact name. Then publish with
+# scripts/publish-release.sh.
+#
 # A bump needs a clean working tree and a free tag v<version>. The bump is
 # committed as "Release v<version>" and tagged v<version> only after
 # the build, notarization and checks all pass; on failure it is reverted.
@@ -46,6 +51,8 @@ lockfile="src-tauri/Cargo.lock"
 die() { echo "error: $*" >&2; exit 1; }
 
 [[ "$(uname -s)" == Darwin ]] || die "macOS only"
+# Tauri names the dmg after the target arch; the cask wants aarch64.
+[[ "$(uname -m)" == arm64 ]] || die "build on an Apple Silicon Mac (the Homebrew cask expects Gestalt_<version>_aarch64.dmg)"
 
 notarize=1
 bump=patch
@@ -152,12 +159,16 @@ if [[ "$bump" != none ]]; then
 fi
 
 # --- build ------------------------------------------------------------------
-# Remove old bundles so the globs below only see this build's output.
+# Remove old bundles so only this build's output is checked below.
 rm -rf "$bundle_dir/macos" "$bundle_dir/dmg"
 pnpm tauri build --bundles app,dmg ${args[@]+"${args[@]}"} # also updates Cargo.lock
 
-app="$(ls -d "$bundle_dir"/macos/*.app | head -1)"
-dmg="$(ls "$bundle_dir"/dmg/*.dmg | head -1)"
+app="$bundle_dir/macos/Gestalt.app"
+# The Homebrew cask (cjcooper/homebrew-tap, Casks/gestalt.rb) downloads
+# exactly this name from the v<version> GitHub release; Apple Silicon only.
+dmg="$bundle_dir/dmg/Gestalt_${new_version}_aarch64.dmg"
+[[ -d "$app" ]] || die "expected $app; got: $(ls "$bundle_dir/macos")"
+[[ -f "$dmg" ]] || die "expected $dmg (the Homebrew cask needs this name); got: $(ls "$bundle_dir/dmg")"
 
 if (( notarize )); then
   echo "Notarizing $(basename "$dmg") (usually a few minutes)…"
@@ -179,6 +190,12 @@ if (( notarize )); then
 fi
 codesign -dv "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime Version|Timestamp)='
 
+# --- checksum ---------------------------------------------------------------
+# After stapling, which rewrites the dmg. `shasum` format with a bare file
+# name, so `shasum -a 256 -c` works next to the downloaded dmg.
+(cd "$(dirname "$dmg")" && shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256")
+sha256="$(cut -d' ' -f1 "$dmg.sha256")"
+
 # --- commit + tag -----------------------------------------------------------
 if [[ "$bump" != none ]]; then
   trap - EXIT
@@ -192,3 +209,10 @@ echo
 echo "Version: $new_version"
 echo "App: $app"
 echo "DMG: $dmg"
+echo "SHA-256: $sha256"
+if (( notarize )); then
+  echo
+  echo "Publish (from main): scripts/publish-release.sh"
+else
+  echo "(not notarized: don't publish this dmg)"
+fi

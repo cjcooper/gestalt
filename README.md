@@ -58,6 +58,34 @@ everything passes the script commits `Release v<version>` and tags
 Never export `APPLE_SIGNING_IDENTITY` in your shell profile: `pnpm tauri
 build` signs whenever it is set.
 
+The release dmg is
+`src-tauri/target/release/bundle/dmg/Gestalt_<version>_aarch64.dmg` (Apple
+Silicon only; the script refuses to run on an Intel Mac), with
+`Gestalt_<version>_aarch64.dmg.sha256` next to it, hashed after stapling.
+
+### Publishing (GitHub release + Homebrew)
+
+The Homebrew cask (`Casks/gestalt.rb` in `cjcooper/homebrew-tap`) installs
+`https://github.com/cjcooper/gestalt/releases/download/v<version>/Gestalt_<version>_aarch64.dmg`.
+To publish, on `main`:
+
+```sh
+scripts/build-signed.sh                  # bump, sign, notarize, commit + tag
+scripts/publish-release.sh --dry-run     # optional: every check, nothing pushed
+scripts/publish-release.sh               # push main + tag, create the GitHub release
+```
+
+`publish-release.sh` needs `gh` logged in. It checks that a clean `main` has
+the tag `v<version>` in its history, with nothing built into the app changed
+since (only `scripts/`, `README.md` and `.github/` may change); that the dmg
+has the right name, matches its `.sha256`, and is notarized and stapled; and
+that it holds an arm64 `Gestalt.app` at that version. Then it pushes, creates
+the release marked latest (the cask's livecheck follows the latest release),
+downloads the asset again to verify its SHA-256, and prints the `version` /
+`sha256` for the cask, along with a `brew bump-cask-pr` command. `--clobber`
+replaces the assets of a release that already exists. A changed dmg means a
+new `sha256` in the cask.
+
 One-time setup:
 
 1. **Certificate.** In Xcode → Settings → Accounts → (team) → Manage
