@@ -114,12 +114,14 @@ terminal control Finder. If it fails with "Not authorized to send Apple events
 to Finder", allow it in System Settings → Privacy & Security → Automation.
 
 If `pnpm tauri build` fails with "Failed to create app Assets.car … Bad file
-descriptor", stale Xcode asset-catalog helpers are to blame.
-`build-signed.sh` clears them before building; by hand:
+descriptor": Tauri runs `actool` with stdin closed, which makes it fail and
+leaves Xcode's `ibtoold` daemon broken, so later `actool` runs fail too.
+`build-signed.sh` works around it with an `actool` wrapper that supplies
+`/dev/null` as stdin. For a plain build, use the wrapper the script leaves in
+`src-tauri/target/actool-shim` and restart the daemon:
 
 ```sh
-killall -9 ibtoold actool AssetCatalogSimulatorAgent IBAgent-macOS 2>/dev/null
-xcrun simctl shutdown all
+killall ibtoold; PATH="$PWD/src-tauri/target/actool-shim:$PATH" pnpm tauri build
 ```
 
 Never commit the `.p8` key or the password (`*.p8` and `private_keys/` are

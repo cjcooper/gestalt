@@ -159,15 +159,20 @@ if [[ "$bump" != none ]]; then
 fi
 
 # --- build ------------------------------------------------------------------
-# Stale asset-catalog helpers make actool fail on icons/AppIcon.icon with
-# "Bad file descriptor" (Failed to create app Assets.car). Start them fresh;
-# this also shuts down any running iOS simulators.
-killall -9 ibtoold actool AssetCatalogSimulatorAgent IBAgent-macOS 2>/dev/null || true
-xcrun simctl shutdown all 2>/dev/null || true
+# Tauri runs `actool` (to compile icons/AppIcon.icon into Assets.car) with
+# stdin closed. actool then fails with "Bad file descriptor" and leaves its
+# ibtoold daemon broken, so every later actool run fails too until that daemon
+# exits. Restart any broken daemon and put a wrapper first on PATH that gives
+# actool /dev/null as stdin (Tauri finds actool through PATH).
+killall ibtoold 2>/dev/null || true
+shim_dir="$root/src-tauri/target/actool-shim" # target/ is git-ignored
+mkdir -p "$shim_dir"
+printf '#!/bin/sh\nexec /usr/bin/actool "$@" </dev/null\n' > "$shim_dir/actool"
+chmod +x "$shim_dir/actool"
 
 # Remove old bundles so only this build's output is checked below.
 rm -rf "$bundle_dir/macos" "$bundle_dir/dmg"
-pnpm tauri build --bundles app,dmg ${args[@]+"${args[@]}"} # also updates Cargo.lock
+PATH="$shim_dir:$PATH" pnpm tauri build --bundles app,dmg ${args[@]+"${args[@]}"} # also updates Cargo.lock
 
 app="$bundle_dir/macos/Gestalt.app"
 # The Homebrew cask (cjcooper/homebrew-tap, Casks/gestalt.rb) downloads
