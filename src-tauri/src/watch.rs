@@ -1,13 +1,15 @@
-//! Watch the open folder (and its repo's git metadata) and tell the UI what
-//! kind of thing changed, so it can refresh just the affected views.
+//! Watch each window's open folder (and its repo's git metadata) and tell
+//! that window what kind of thing changed, so it can refresh just the
+//! affected views.
 //!
-//! Emits `workspace://changed` with a [`Changes`] payload, debounced.
+//! Emits `workspace://changed` to the window, with a [`Changes`] payload, debounced.
 
 use crate::shell_env::{EnvMap, ShellEnv};
 use notify_debouncer_full::notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,9 +91,6 @@ pub fn classify(path: &Path, kind: &EventKind, loc: &Locations) -> Changes {
     if rel.components().any(|p| IGNORED_DIRS.iter().any(|d| p.as_os_str() == *d)) {
         return c;
     }
-    if rel.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gestalt.env.tmp-")) {
-        return c; // the env editor's write-then-rename temp file
-    }
     c.worktree = true;
     c.structure = matches!(kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)));
     // Renames don't say whether a file or folder moved: count them.
@@ -104,11 +103,16 @@ pub fn classify(path: &Path, kind: &EventKind, loc: &Locations) -> Changes {
     c
 }
 
+type Watcher = Debouncer<RecommendedWatcher, RecommendedCache>;
+
+/// One watch per window, by window label.
 #[derive(Default)]
 pub struct WorkspaceWatcher {
     /// Bumped per root so a slow setup for an old root can't replace a newer one.
     generation: AtomicU64,
-    active: Mutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>,
+    /// The newest generation started for each window.
+    latest: Mutex<HashMap<String, u64>>,
+    active: Mutex<HashMap<String, Watcher>>,
 }
 
 async fn git_path(root: &Path, env: &EnvMap, flag: &str) -> Option<PathBuf> {
@@ -129,12 +133,13 @@ async fn git_path(root: &Path, env: &EnvMap, flag: &str) -> Option<PathBuf> {
     p.canonicalize().ok()
 }
 
-/// (Re)start watching `root`, replacing any previous watch.
-pub async fn start<R: Runtime>(app: AppHandle<R>, root: PathBuf) {
+/// (Re)start watching `root` for `window`, replacing that window's previous watch.
+pub async fn start<R: Runtime>(app: AppHandle<R>, window: String, root: PathBuf) {
     let state = app.state::<WorkspaceWatcher>();
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    state.latest.lock().unwrap().insert(window.clone(), generation);
     // Stop the old watcher right away so it can't report on the old root.
-    state.active.lock().unwrap().take();
+    state.active.lock().unwrap().remove(&window);
 
     let Ok(root) = root.canonicalize() else { return };
     let env = app.state::<ShellEnv>().get().await;
@@ -143,6 +148,7 @@ pub async fn start<R: Runtime>(app: AppHandle<R>, root: PathBuf) {
     let loc = Locations { root: root.clone(), git_dir, common_dir };
 
     let handler_app = app.clone();
+    let handler_window = window.clone();
     let handler_loc = loc.clone();
     let debouncer = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| {
         let Ok(events) = res else { return };
@@ -153,7 +159,7 @@ pub async fn start<R: Runtime>(app: AppHandle<R>, root: PathBuf) {
             }
         }
         if changes.any() {
-            let _ = handler_app.emit("workspace://changed", changes);
+            let _ = handler_app.emit_to(handler_window.as_str(), "workspace://changed", changes);
         }
     });
     let Ok(mut debouncer) = debouncer else { return };
@@ -169,9 +175,16 @@ pub async fn start<R: Runtime>(app: AppHandle<R>, root: PathBuf) {
         let _ = debouncer.watch(git_dir, RecursiveMode::NonRecursive);
     }
 
-    if state.generation.load(Ordering::SeqCst) == generation {
-        *state.active.lock().unwrap() = Some(debouncer);
+    if state.latest.lock().unwrap().get(&window) == Some(&generation) {
+        state.active.lock().unwrap().insert(window, debouncer);
     }
+}
+
+/// Stop watching for `window` (it closed), including a watch still being set up.
+pub fn stop<R: Runtime>(app: &AppHandle<R>, window: &str) {
+    let state = app.state::<WorkspaceWatcher>();
+    state.latest.lock().unwrap().remove(window);
+    state.active.lock().unwrap().remove(window);
 }
 
 #[cfg(test)]
@@ -209,7 +222,6 @@ mod tests {
     fn ignores_noise() {
         assert!(!c("/repo/infra/a/.terraform/providers/x", CREATE).any());
         assert!(!c("/repo/infra/.git/objects/ab/cd", CREATE).any());
-        assert!(!c("/repo/infra/a/.gestalt.env.tmp-123", CREATE).any());
         assert!(!c("/repo/.bare/objects/ab/cdef", CREATE).any());
         assert!(!c("/repo/.bare/logs/HEAD", EDIT).any());
         assert!(!c("/repo/.bare/refs/heads/main.lock", CREATE).any());
@@ -307,7 +319,7 @@ mod tests {
     }
 
     fn is_watching(app: &tauri::App<tauri::test::MockRuntime>) -> bool {
-        app.state::<WorkspaceWatcher>().active.lock().unwrap().is_some()
+        app.state::<WorkspaceWatcher>().active.lock().unwrap().contains_key("main")
     }
 
     /// Real OS file events (FSEvents on macOS) for a plain clone flow through
@@ -320,14 +332,13 @@ mod tests {
         std::fs::write(root.join("mod/main.tf"), "").unwrap();
         let (app, rx) = app();
 
-        start(app.handle().clone(), root.clone()).await;
+        start(app.handle().clone(), "main".into(), root.clone()).await;
         assert!(is_watching(&app));
         std::thread::sleep(Duration::from_millis(300)); // let FSEvents attach
         collect(&rx, |_| false, QUIET); // anything from setup
 
         // Noise only: nothing should be reported as a change.
         std::fs::write(root.join("mod/.terraform/x"), "noise").unwrap();
-        std::fs::write(root.join("mod/.gestalt.env.tmp-1"), "editor temp").unwrap();
         let seen = collect(&rx, |_| false, QUIET);
         assert!(!seen.any(), "noise was reported: {seen:?}");
 
@@ -345,7 +356,7 @@ mod tests {
         assert!(collect(&rx, |c| c.git_refs, EXPECT).git_refs, "commit not seen");
 
         // A folder that can't be opened stops the old watch and starts none.
-        start(app.handle().clone(), root.join("missing")).await;
+        start(app.handle().clone(), "main".into(), root.join("missing")).await;
         assert!(!is_watching(&app));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -367,7 +378,7 @@ mod tests {
         std::fs::write(admin.join("commondir"), format!("{}\n", main.join(".git").display())).unwrap();
         let (app, rx) = app();
 
-        start(app.handle().clone(), wt.clone()).await;
+        start(app.handle().clone(), "main".into(), wt.clone()).await;
         assert!(is_watching(&app));
         std::thread::sleep(Duration::from_millis(300));
         collect(&rx, |_| false, QUIET);
@@ -393,7 +404,7 @@ mod tests {
         app.state::<ShellEnv>().get().await; // load once, up front
 
         let h = app.handle();
-        tokio::join!(start(h.clone(), a.clone()), start(h.clone(), b.clone()));
+        tokio::join!(start(h.clone(), "main".into(), a.clone()), start(h.clone(), "main".into(), b.clone()));
         assert!(is_watching(&app));
         std::thread::sleep(Duration::from_millis(300));
         collect(&rx, |_| false, QUIET);
@@ -404,6 +415,35 @@ mod tests {
         std::fs::write(b.join("x.tf"), "").unwrap();
         assert!(collect(&rx, |c| c.worktree, EXPECT).worktree, "new root not watched");
 
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    /// Each window has its own watch; closing one leaves the others.
+    #[tokio::test]
+    async fn windows_are_watched_separately() {
+        let (a, b) = (temp("win-a"), temp("win-b"));
+        let (app, rx) = app();
+        let h = app.handle();
+        start(h.clone(), "main".into(), a.clone()).await;
+        start(h.clone(), "other".into(), b.clone()).await;
+        assert_eq!(app.state::<WorkspaceWatcher>().active.lock().unwrap().len(), 2);
+
+        stop(h, "other");
+        assert!(is_watching(&app));
+        assert_eq!(app.state::<WorkspaceWatcher>().active.lock().unwrap().len(), 1);
+        std::thread::sleep(Duration::from_millis(300));
+        collect(&rx, |_| false, QUIET);
+        std::fs::write(b.join("x.tf"), "").unwrap();
+        assert!(!collect(&rx, |_| false, QUIET).any(), "closed window still watched");
+        std::fs::write(a.join("x.tf"), "").unwrap();
+        assert!(collect(&rx, |c| c.worktree, EXPECT).worktree, "open window not watched");
+
+        // Closing a window with no watch is harmless.
+        start(h.clone(), "late".into(), b.clone()).await;
+        stop(h, "late");
+        stop(h, "never-opened");
+        assert_eq!(app.state::<WorkspaceWatcher>().active.lock().unwrap().len(), 1);
         std::fs::remove_dir_all(&a).unwrap();
         std::fs::remove_dir_all(&b).unwrap();
     }

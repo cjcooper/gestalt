@@ -1,0 +1,42 @@
+#!/bin/sh
+# gestalt: open folders in Gestalt from a terminal.
+#
+#   gestalt [folder...]      (no folder: the current one)
+#
+# Each folder opens in its own window. A folder that is already open has its
+# window brought forward instead. Works whether or not Gestalt is running.
+#
+# Bundled as Gestalt.app/Contents/Resources/cli/gestalt-cli. Put it on your
+# PATH as `gestalt` with a link, e.g.:
+#   ln -s /Applications/Gestalt.app/Contents/Resources/cli/gestalt-cli /usr/local/bin/gestalt
+set -eu
+
+# Follow links to this script to find the app bundle it lives in.
+self=$0
+while [ -L "$self" ]; do
+  target=$(readlink "$self")
+  case $target in
+    /*) self=$target ;;
+    *) self=$(dirname "$self")/$target ;;
+  esac
+done
+app=$(cd "$(dirname "$self")/../../.." && pwd -P)
+
+[ $# -gt 0 ] || set -- .
+# Rewrite each argument as an absolute path: the app is started by
+# LaunchServices, which doesn't run it in this folder.
+n=$#
+while [ "$n" -gt 0 ]; do
+  arg=$1
+  shift
+  n=$((n - 1))
+  if [ ! -d "$arg" ]; then
+    echo "gestalt: not a folder: $arg" >&2
+    exit 1
+  fi
+  set -- "$@" "$(cd "$arg" && pwd -P)"
+done
+
+# -n: start a new process even if Gestalt is running. It hands the folders
+# to the running one and exits.
+exec open -n "$app" --args "$@"

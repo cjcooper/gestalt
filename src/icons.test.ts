@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileIcon, fileKind, icons } from "./icons";
+import { fileIcon, fileKind, icons, providerLogos } from "./icons";
 
 describe("icons", () => {
   it("are all 16px currentColor SVGs", () => {
@@ -16,10 +16,21 @@ describe("icons", () => {
   });
 });
 
+describe("providerLogos", () => {
+  it("are 16px filled SVGs coloured by CSS", () => {
+    for (const [name, markup] of Object.entries(providerLogos)) {
+      const div = document.createElement("div");
+      div.innerHTML = markup;
+      const svg = div.querySelector("svg")!;
+      expect(svg.getAttribute("width"), name).toBe("16");
+      expect(svg.getAttribute("fill"), name).toBe("currentColor");
+      expect(svg.querySelector("path")!.getAttribute("d")!.length, name).toBeGreaterThan(100);
+    }
+  });
+});
+
 describe("fileKind", () => {
   it.each([
-    [".gestalt.env", "env"],
-    [".GESTALT.ENV", "env"],
     ["main.tf", "tofu"],
     ["thing.tofu", "tofu"],
     ["terragrunt.hcl", "tofu"],
@@ -35,7 +46,7 @@ describe("fileKind", () => {
     ["rules.mk", "text"],
     ["Makefile", "text"],
     ["image.png", "other"],
-    ["env", "other"],
+    [".gestalt.env", "other"],
   ] as const)("%s → %s", (name, kind) => {
     expect(fileKind(name)).toBe(kind);
   });
@@ -45,7 +56,6 @@ describe("fileIcon", () => {
   it("picks an icon per kind", () => {
     expect(fileIcon("tofu")).toBe(icons.fileCode);
     expect(fileIcon("vars")).toBe(icons.fileVars);
-    expect(fileIcon("env")).toBe(icons.key);
     expect(fileIcon("text")).toBe(icons.fileText);
     expect(fileIcon("other")).toBe(icons.file);
   });

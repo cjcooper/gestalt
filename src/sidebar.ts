@@ -95,7 +95,7 @@ function showTab(want: Tab) {
     b.setAttribute("aria-selected", String(on));
   });
   document.querySelectorAll<HTMLElement>("[data-panel]").forEach((p) => (p.hidden = p.dataset.panel !== tab));
-  if (tab === "commits" && rootOpen && !commitsLoaded) void loadCommits(true);
+  if (tab === "commits" && root && !commitsLoaded) void loadCommits(true);
 }
 
 // ---- Commits -------------------------------------------------------------------
@@ -135,7 +135,8 @@ interface GitLog {
 
 const PAGE = 200;
 /** No git queries until a folder is open. */
-let rootOpen = false;
+/** The window's open folder; git commands run there. */
+let root: string | null = null;
 /** Whether the open folder is in a git repo; the Commits tab is hidden if not. */
 let repoAvailable = false;
 let commitsLoaded = false;
@@ -388,7 +389,7 @@ async function loadCommits(reset: boolean) {
   try {
     // On refresh, reload everything that was showing so the list doesn't shrink.
     const limit = reset ? Math.max(PAGE, list.querySelectorAll(".commit:not(.uncommitted)").length) : PAGE;
-    const log = await invoke<GitLog>("git_log", { skip: loadedCount, limit });
+    const log = await invoke<GitLog>("git_log", { root, skip: loadedCount, limit });
     if (gen !== commitsGeneration) return;
     commitsLoaded = true;
     repoRoot = log.repoRoot;
@@ -434,7 +435,7 @@ async function loadCommits(reset: boolean) {
 
 /** Reload commits now if the tab is showing, else on next view. */
 export async function refreshCommits() {
-  if (!rootOpen) return;
+  if (!root) return;
   commitsLoaded = false;
   // Re-checks repo status (it may have changed); showTab then reloads the list if visible.
   await updateRepoAvailability();
@@ -448,7 +449,7 @@ let uncommittedGeneration = 0;
 
 /** Files changed on disk: update just the pinned "Uncommitted changes" row. */
 export async function refreshUncommitted() {
-  if (!rootOpen || !repoAvailable) return;
+  if (!root || !repoAvailable) return;
   if (!commitsVisible() || !commitsLoaded) {
     commitsLoaded = false; // reload fully when the tab is next shown
     return;
@@ -456,7 +457,7 @@ export async function refreshUncommitted() {
   const gen = ++uncommittedGeneration;
   const listGen = commitsGeneration;
   try {
-    const u = await invoke<NonNullable<GitLog["uncommitted"]>>("git_uncommitted");
+    const u = await invoke<NonNullable<GitLog["uncommitted"]>>("git_uncommitted", { root });
     // Skip if superseded, or a full reload started meanwhile (it includes this row).
     if (gen !== uncommittedGeneration || listGen !== commitsGeneration) return;
     const row = uncommittedRow(u);
@@ -471,14 +472,14 @@ export async function refreshUncommitted() {
 
 /** Show the Commits tab only for git repos; falls back to Files otherwise. */
 async function updateRepoAvailability() {
-  repoAvailable = await invoke<boolean>("git_is_repo").catch(() => false);
+  repoAvailable = await invoke<boolean>("git_is_repo", { root }).catch(() => false);
   document.querySelector<HTMLElement>('[data-tab="commits"]')!.hidden = !repoAvailable;
   showTab(wantedTab);
 }
 
 /** A different folder was opened: forget the previous repo's list. */
-export async function resetCommits() {
-  rootOpen = true;
+export async function resetCommits(folder: string) {
+  root = folder;
   wantedTab = "commits"; // each newly opened folder starts on Commits
   commitsGeneration++;
   commitsLoaded = false;

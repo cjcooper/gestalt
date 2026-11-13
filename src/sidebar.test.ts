@@ -52,7 +52,7 @@ async function setup(h: typeof handlers = {}) {
 
 /** Open a folder and wait for the commit list to load. */
 async function openFolder() {
-  await sb.resetCommits();
+  await sb.resetCommits("/repo");
   await flush();
 }
 
@@ -200,7 +200,7 @@ describe("tabs", () => {
     await openFolder();
     expect(tab("commits").hidden).toBe(false);
     expect(panel("commits").hidden).toBe(false);
-    expect(gitLogCalls()).toEqual([["git_log", { skip: 0, limit: 200 }]]);
+    expect(gitLogCalls()).toEqual([["git_log", { root: "/repo", skip: 0, limit: 200 }]]);
 
     tab("files").click();
     expect(panel("files").hidden).toBe(false);
@@ -325,7 +325,7 @@ describe("commit list", () => {
     const d = deferred<unknown>();
     await setup({ git_log: () => d.promise });
     const more = byId<HTMLButtonElement>("commits-more");
-    const p = sb.resetCommits();
+    const p = sb.resetCommits("/repo");
     await flush();
     const status = byId("commits-status");
     expect(status.textContent).toBe("Loading…");
@@ -373,13 +373,13 @@ describe("commit list", () => {
 
     more.click();
     await flush();
-    expect(gitLogCalls()[1]).toEqual(["git_log", { skip: 200, limit: 200 }]);
+    expect(gitLogCalls()[1]).toEqual(["git_log", { root: "/repo", skip: 200, limit: 200 }]);
     expect(rows()).toHaveLength(250);
     expect(more.hidden).toBe(true);
 
     await sb.refreshCommits();
     await flush();
-    expect(gitLogCalls()[2]).toEqual(["git_log", { skip: 0, limit: 250 }]);
+    expect(gitLogCalls()[2]).toEqual(["git_log", { root: "/repo", skip: 0, limit: 250 }]);
     expect(rows()).toHaveLength(250);
   });
 
@@ -416,9 +416,9 @@ describe("commit list", () => {
     const second = deferred<unknown>();
     const calls = [first, second];
     await setup({ git_log: () => calls.shift()!.promise });
-    void sb.resetCommits();
+    void sb.resetCommits("/repo");
     await flush();
-    void sb.resetCommits();
+    void sb.resetCommits("/repo");
     await flush();
     second.resolve(log({ commits: [commit(2)] }));
     await flush();
@@ -429,9 +429,9 @@ describe("commit list", () => {
     const third = deferred<unknown>();
     const fourth = deferred<unknown>();
     calls.push(third, fourth);
-    void sb.resetCommits();
+    void sb.resetCommits("/repo");
     await flush();
-    void sb.resetCommits();
+    void sb.resetCommits("/repo");
     await flush();
     fourth.resolve(log({ commits: [commit(4)] }));
     await flush();

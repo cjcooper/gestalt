@@ -14,11 +14,14 @@ interface MenuItemOpts {
 const m = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
+  windowLabel: "main",
+  setTitle: vi.fn(),
+  onCloseRequested: vi.fn(),
   menus: [] as { items: { text?: string; action?: () => void; predefined?: string }[]; popup: () => Promise<void> }[],
   ask: vi.fn(),
   message: vi.fn(),
   open: vi.fn(),
-  openEnvEditor: vi.fn(),
+  openCloudSettings: vi.fn(),
   openImportDialog: vi.fn(),
   initSystemColors: vi.fn(),
   initSidebar: vi.fn(),
@@ -28,7 +31,14 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: m.invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: m.listen }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    label: m.windowLabel,
+    listen: m.listen,
+    setTitle: m.setTitle,
+    onCloseRequested: m.onCloseRequested,
+  }),
+}));
 vi.mock("@tauri-apps/api/menu", () => ({
   Menu: {
     new: async (opts: { items: MenuItemOpts[] }) => {
@@ -41,7 +51,10 @@ vi.mock("@tauri-apps/api/menu", () => ({
   PredefinedMenuItem: { new: async (opts: { item: string }) => ({ predefined: opts.item }) },
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: m.ask, message: m.message, open: m.open }));
-vi.mock("./envEditor", () => ({ openEnvEditor: m.openEnvEditor }));
+vi.mock("./cloudSettings", async (actual) => ({
+  ...(await actual<typeof import("./cloudSettings")>()),
+  openCloudSettings: m.openCloudSettings,
+}));
 vi.mock("./importDialog", () => ({ openImportDialog: m.openImportDialog }));
 vi.mock("./systemColors", () => ({ initSystemColors: m.initSystemColors }));
 vi.mock("./sidebar", () => ({
@@ -61,7 +74,6 @@ const dir = (path: string, extra: Partial<DirEntry> = {}): DirEntry => ({
   isDir: true,
   hasChildren: true,
   isModule: false,
-  hasEnvFile: false,
   ...extra,
 });
 const file = (path: string): DirEntry => dir(path, { isDir: false, hasChildren: false });
@@ -69,13 +81,13 @@ const file = (path: string): DirEntry => dir(path, { isDir: false, hasChildren: 
 /** A small infra repo: list_dir results by folder. */
 const fs: Record<string, DirEntry[]> = {
   "/repo": [
-    dir("/repo/envs", { hasEnvFile: true }),
+    dir("/repo/envs"),
     dir("/repo/empty", { hasChildren: false }),
     dir("/repo/broken"),
     file("/repo/README.md"),
   ],
-  "/repo/envs": [dir("/repo/envs/prod", { isModule: true }), file("/repo/envs/.gestalt.env")],
-  "/repo/envs/prod": [file("/repo/envs/prod/main.tf"), file("/repo/envs/prod/.gestalt.env"), file("/repo/envs/prod/prod.tfvars")],
+  "/repo/envs": [dir("/repo/envs/prod", { isModule: true }), file("/repo/envs/common.tfvars")],
+  "/repo/envs/prod": [file("/repo/envs/prod/main.tf"), file("/repo/envs/prod/prod.tfvars")],
 };
 
 const PLAN_LINE = "Plan: 2 to add, 0 to change, 0 to destroy.";
@@ -83,6 +95,7 @@ const PLAN_LINE = "Plan: 2 to add, 0 to change, 0 to destroy.";
 let handlers: Record<string, Handler>;
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
 let docListeners: [string, EventListenerOrEventListenerObject][] = [];
+let closeRequested: ((e: { preventDefault: () => void }) => Promise<void>) | undefined;
 
 function emit(event: string, payload: unknown = {}) {
   listeners.get(event)!({ payload });
@@ -107,6 +120,8 @@ async function boot(opts: BootOptions = {}) {
       return fs[a!.path as string] ?? [];
     },
     run_plan: () => 1,
+    cloud_effective: () => [],
+    cloud_folders: () => ({}),
     ...opts.handlers,
   };
   m.invoke.mockImplementation(invokeRouter(new Proxy({}, { get: (_, k: string) => handlers[k] })));
@@ -154,8 +169,6 @@ const exitEv = (runId: number, extra: Record<string, unknown> = {}) =>
 
 const row = (label: string) =>
   [...document.querySelectorAll<HTMLElement>("#tree .tree-row")].find((r) => r.querySelector(".label")!.textContent === label)!;
-const rowsByLabel = (label: string) =>
-  [...document.querySelectorAll<HTMLElement>("#tree .tree-row")].filter((r) => r.querySelector(".label")!.textContent === label);
 const treeLabels = () => [...document.querySelectorAll("#tree .tree-row")]
   .filter((r) => !r.closest("ul[hidden]"))
   .map((r) => r.querySelector(".label")!.textContent);
@@ -185,7 +198,14 @@ beforeEach(() => {
     return () => {};
   });
   m.openImportDialog.mockResolvedValue(null);
-  m.openEnvEditor.mockResolvedValue(false);
+  m.openCloudSettings.mockResolvedValue(false);
+  m.windowLabel = "main";
+  m.setTitle.mockResolvedValue(undefined);
+  closeRequested = undefined;
+  m.onCloseRequested.mockImplementation(async (cb: typeof closeRequested) => {
+    closeRequested = cb;
+    return () => {};
+  });
   m.resetCommits.mockResolvedValue(undefined);
   m.refreshCommits.mockResolvedValue(undefined);
   m.refreshUncommitted.mockResolvedValue(undefined);
@@ -318,7 +338,8 @@ describe("opening a folder", () => {
     expect(byId("root-path").textContent).toBe("/repo");
     expect(byId("root-path").title).toBe("Opened from GESTALT_ROOT");
     expect(localStorage.getItem("gestalt.lastRoot")).toBe("/repo");
-    expect(m.resetCommits).toHaveBeenCalled();
+    expect(m.resetCommits).toHaveBeenCalledWith("/repo");
+    expect(m.setTitle).toHaveBeenCalledWith("repo — Gestalt");
     expect(byId("welcome").hidden).toBe(true);
     expect(byId("workspace").hidden).toBe(false);
     expect(byId<HTMLButtonElement>("refresh-tree").disabled).toBe(false);
@@ -475,7 +496,7 @@ describe("folder tree", () => {
     expect(envs.className).toBe("tree-row folder");
     expect(envs.querySelector(".caret")!.textContent).toBe("▸");
     expect(envs.querySelector(".icon")!.innerHTML).toBe(html(icons.folder));
-    expect(envs.querySelector(".badge.env")!.getAttribute("title")).toMatch(/applies here and to all subfolders/);
+    expect(envs.querySelector(".badge")).toBeNull();
     expect(envs.style.paddingLeft).toBe("20px");
     expect(row("empty").querySelector(".caret")!.textContent).toBe("");
 
@@ -489,7 +510,7 @@ describe("folder tree", () => {
     await bootRepo();
     row("envs").click();
     await flush();
-    expect(treeLabels()).toEqual(["/repo", "envs", "prod", ".gestalt.env", "empty", "broken", "README.md"]);
+    expect(treeLabels()).toEqual(["/repo", "envs", "prod", "common.tfvars", "empty", "broken", "README.md"]);
     expect(row("envs").classList.contains("selected")).toBe(true);
     expect(row("envs").querySelector(".caret")!.textContent).toBe("▾");
 
@@ -500,11 +521,7 @@ describe("folder tree", () => {
     await flush();
     expect(row("main.tf").className).toBe("tree-row file file-tofu");
     expect(row("prod.tfvars").className).toBe("tree-row file file-vars");
-    const envFile = rowsByLabel(".gestalt.env")[0]; // envs/prod/.gestalt.env
-    expect(envFile.className).toBe("tree-row file file-env");
-    expect(envFile.title).toBe("Double-click to edit");
-    expect(envFile.querySelector(".icon")!.innerHTML).toBe(html(icons.key));
-    expect(envFile.style.paddingLeft).toBe("48px");
+    expect(row("prod.tfvars").style.paddingLeft).toBe("48px");
 
     const listCalls = invoked("list_dir").length;
     row("envs").click();
@@ -553,7 +570,7 @@ describe("folder tree", () => {
     };
     byId("refresh-tree").click();
     await flush();
-    expect(treeLabels()).toEqual(["/repo", "envs", "prod", ".gestalt.env", "empty", "broken", "README.md"]);
+    expect(treeLabels()).toEqual(["/repo", "envs", "prod", "common.tfvars", "empty", "broken", "README.md"]);
     expect(row("prod").querySelector(".caret")!.textContent).toBe("▸");
 
     handlers.list_dir = realList;
@@ -580,20 +597,29 @@ describe("folder tree", () => {
     expect(row("repo").classList.contains("folder")).toBe(true);
   });
 
-  it("edits .gestalt.env from a file double-click and refreshes on change", async () => {
-    await bootRepo();
-    row("envs").click();
-    await flush();
-    const envFile = row(".gestalt.env");
-    envFile.dispatchEvent(new MouseEvent("dblclick"));
-    await flush();
-    expect(m.openEnvEditor).toHaveBeenCalledWith("/repo/envs");
-    expect(invoked("open_root")).toHaveLength(1);
+  it("marks folders that have cloud settings of their own", async () => {
+    await bootRepo({
+      handlers: { cloud_folders: () => ({ "/repo/envs": { "aws.profile": "dev", "gcp.project": "p-1" } }) },
+    });
+    const logos = [...row("envs").querySelectorAll<HTMLElement>(".cloud-logo")];
+    expect(logos.map((b) => b.className)).toEqual(["cloud-logo aws", "cloud-logo gcp"]);
+    expect(logos[0].querySelector("svg")).not.toBeNull();
+    expect(logos[0].title).toBe("AWS profile: dev\nApplies here and to all subfolders.");
+    expect(row("empty").querySelector(".badge, .cloud-logo")).toBeNull();
+  });
 
-    m.openEnvEditor.mockResolvedValueOnce(true);
-    row(".gestalt.env").dispatchEvent(new MouseEvent("dblclick"));
-    await flush();
-    expect(invoked("open_root")).toHaveLength(2);
+  it("builds the tree without badges when cloud settings can't be read", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await bootRepo({
+      handlers: {
+        cloud_folders: () => {
+          throw "unreadable";
+        },
+      },
+    });
+    expect(error).toHaveBeenCalledWith("unreadable");
+    expect(treeLabels()).toContain("envs");
+    expect(document.querySelector(".tree .cloud-logo")).toBeNull();
   });
 });
 
@@ -606,12 +632,12 @@ describe("context menus", () => {
     await flush();
     expect(ev.defaultPrevented).toBe(true);
     expect(row("prod").classList.contains("selected")).toBe(true);
-    expect(menuTexts()).toEqual(["Import…", "Plan", "Apply…", "--Separator", "Edit .gestalt.env…", "Clean .terraform Caches…"]);
+    expect(menuTexts()).toEqual(["Import…", "Plan", "Apply…", "--Separator", "Cloud Settings…", "Clean .terraform Caches…"]);
     expect(lastMenu().popup).toHaveBeenCalled();
 
     rightClick(row("envs"));
     await flush();
-    expect(menuTexts()).toEqual(["Edit .gestalt.env…", "Clean .terraform Caches…"]);
+    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…"]);
   });
 
   it("offers a file's folder menu when right-clicking a file", async () => {
@@ -630,9 +656,14 @@ describe("context menus", () => {
 
     rightClick(row("README.md"));
     await flush();
-    expect(menuTexts()).toEqual(["Edit .gestalt.env…", "Clean .terraform Caches…"]);
-    menuAction("Edit .gestalt.env…");
-    expect(m.openEnvEditor).toHaveBeenCalledWith("/repo");
+    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…"]);
+    menuAction("Cloud Settings…");
+    expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
+    rightClick(row("envs"));
+    await flush();
+    menuAction("Cloud Settings…");
+    const [dir, shown, rel] = m.openCloudSettings.mock.lastCall!;
+    expect([dir, shown, rel("/repo/envs/prod")]).toEqual(["/repo/envs", "envs", "envs/prod"]);
   });
 
   it("runs Plan and Apply… from the menu", async () => {
@@ -739,11 +770,11 @@ describe("runs", () => {
     out(1, "\x1b[32mgreen");
     out(1, "still green");
     out(1, "warning", "stderr");
-    out(1, "used .gestalt.env", "gestalt");
+    out(1, "cloud: AWS profile prd", "gestalt");
     out(1, PLAN_LINE);
     expect(output().innerHTML).toBe(
       '<span class="ansi-fg-2">green</span>\n<span class="ansi-fg-2">still green</span>\n' +
-        '<span class="stderr">warning\n</span><span class="gestalt">used .gestalt.env\n</span>' +
+        '<span class="stderr">warning\n</span><span class="gestalt">cloud: AWS profile prd\n</span>' +
         `<span class="ansi-fg-2">${PLAN_LINE}</span>\n`,
     );
 
@@ -756,7 +787,7 @@ describe("runs", () => {
     expect(closeButton(0).hidden).toBe(false);
     // Reselecting re-renders from scratch with fresh colour state.
     tabs()[0].click();
-    expect(output().textContent).toBe(`green\nstill green\nwarning\nused .gestalt.env\n${PLAN_LINE}\n`);
+    expect(output().textContent).toBe(`green\nstill green\nwarning\ncloud: AWS profile prd\n${PLAN_LINE}\n`);
   });
 
   it("puts the close button first on macOS", async () => {
@@ -1252,5 +1283,152 @@ describe("cleaning caches", () => {
     menuAction("Clean .terraform Caches…");
     await flush();
     expect(invoked("clean_scan")).toEqual([{ dir: "/repo/envs" }]);
+  });
+});
+
+describe("cloud settings", () => {
+  const prd = [
+    { key: "aws.profile", value: "prd", source: "/repo" },
+    { key: "aws.region", value: "eu-west-1", source: "/repo/envs" },
+  ];
+  const statusButton = () => byId<HTMLButtonElement>("cloud-status");
+
+  it("shows what applies to the open folder and edits it from the toolbar", async () => {
+    await boot();
+    expect(statusButton().hidden).toBe(true);
+    statusButton().click();
+    expect(m.openCloudSettings).not.toHaveBeenCalled();
+
+    handlers.cloud_effective = () => prd;
+    m.open.mockResolvedValueOnce("/repo");
+    byId("open-root").click();
+    await flush();
+    expect(invoked("cloud_effective")).toEqual([{ dir: "/repo" }]);
+    expect(statusButton().hidden).toBe(false);
+    expect(byId("cloud-status-text").textContent).toBe("prd · eu-west-1");
+    const logo = byId("cloud-status-text").querySelector<HTMLElement>(".cloud-logo.aws")!;
+    expect(logo.title).toBe("AWS");
+    expect(statusButton().querySelector<HTMLElement>(".icon")!.hidden).toBe(true);
+    expect(statusButton().classList.contains("unset")).toBe(false);
+    expect(statusButton().title).toMatch(/^tofu runs here use AWS prd · eu-west-1\./);
+
+    statusButton().click();
+    expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
+  });
+
+  it("says when no account is chosen, or settings can't be read", async () => {
+    await bootRepo();
+    expect(byId("cloud-status-text").textContent).toBe("No cloud account");
+    expect(statusButton().querySelector<HTMLElement>(".icon")!.hidden).toBe(false);
+    expect(statusButton().classList.contains("unset")).toBe(true);
+    expect(statusButton().title).toMatch(/Click to choose one/);
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    handlers.cloud_effective = () => {
+      throw "broken";
+    };
+    emit("cloud://changed");
+    await flush();
+    expect(error).toHaveBeenCalledWith("broken");
+    expect(byId("cloud-status-text").textContent).toBe("No cloud account");
+  });
+
+  it("refreshes the tree and toolbar when any window changes settings", async () => {
+    await boot();
+    emit("cloud://changed");
+    await flush();
+    expect(invoked("open_root")).toEqual([]);
+
+    m.open.mockResolvedValueOnce("/repo");
+    byId("open-root").click();
+    await flush();
+    handlers.cloud_effective = () => prd;
+    handlers.cloud_folders = () => ({ "/repo/envs": { "aws.region": "eu-west-1" } });
+    emit("cloud://changed");
+    await flush();
+    expect(invoked("open_root")).toHaveLength(2);
+    expect(byId("cloud-status-text").textContent).toBe("prd · eu-west-1");
+    expect(row("envs").querySelector(".cloud-logo")!.className).toBe("cloud-logo aws");
+  });
+
+  it("ignores a slow answer for a folder that's no longer open", async () => {
+    const slow = deferred<unknown>();
+    await bootRepo({ handlers: { cloud_effective: () => slow.promise } });
+    handlers.cloud_effective = () => [];
+    m.open.mockResolvedValueOnce("/other");
+    byId("open-root").click();
+    await flush();
+    slow.resolve(prd);
+    await flush();
+    expect(byId("cloud-status-text").textContent).toBe("No cloud account");
+  });
+
+  it("opens from the Workspace menu for the open folder only", async () => {
+    await boot();
+    emit("menu://cloud-settings");
+    expect(m.openCloudSettings).not.toHaveBeenCalled();
+    m.open.mockResolvedValueOnce("/repo");
+    byId("open-root").click();
+    await flush();
+    emit("menu://cloud-settings");
+    expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
+  });
+});
+
+describe("windows", () => {
+  it("opens no folder in a later window that wasn't given one", async () => {
+    m.windowLabel = "workspace-2";
+    await boot({ lastRoot: "/repo" });
+    expect(invoked("open_root")).toEqual([]);
+    expect(byId("welcome").hidden).toBe(false);
+  });
+
+  it("opens the folder a later window was given", async () => {
+    m.windowLabel = "workspace-2";
+    await boot({ handlers: { initial_root: () => ({ path: "/repo", source: "command line" }) } });
+    expect(invoked("open_root")).toEqual([{ path: "/repo" }]);
+  });
+
+  it("logs a title that can't be set", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    m.setTitle.mockRejectedValue("no permission");
+    await bootRepo();
+    expect(error).toHaveBeenCalledWith("no permission");
+  });
+
+  it("asks before closing a window with tofu running, and stays open if declined", async () => {
+    await bootRepo();
+    const close = async () => {
+      const ev = { preventDefault: vi.fn() };
+      await closeRequested!(ev);
+      return ev.preventDefault;
+    };
+    // Nothing running: closes without asking.
+    expect(await close()).not.toHaveBeenCalled();
+    expect(m.ask).not.toHaveBeenCalled();
+
+    handlers.run_plan = () => 1;
+    plan("/repo/envs/prod");
+    await flush();
+    m.ask.mockResolvedValueOnce(false);
+    expect(await close()).toHaveBeenCalled();
+    expect(m.ask).toHaveBeenLastCalledWith(
+      "1 tofu run is still running in this window. Cancel and close?",
+      expect.objectContaining({ okLabel: "Cancel runs and close", cancelLabel: "Keep open" }),
+    );
+
+    handlers.run_plan = () => 2;
+    plan("/repo/envs");
+    await flush();
+    m.ask.mockResolvedValueOnce(true);
+    expect(await close()).not.toHaveBeenCalled();
+    expect(m.ask.mock.lastCall![0]).toBe("2 tofu runs are still running in this window. Cancel and close?");
+  });
+
+  it("logs a close handler that can't be installed", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    m.onCloseRequested.mockRejectedValue("no permission");
+    await bootRepo();
+    expect(error).toHaveBeenCalledWith("no permission");
   });
 });
