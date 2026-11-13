@@ -15,3 +15,8 @@ if (!HTMLDialogElement.prototype.close) {
 for (const name of ["setPointerCapture", "releasePointerCapture"] as const) {
   if (!Element.prototype[name]) Element.prototype[name] = function () {};
 }
+// CodeMirror measures text ranges for the cursor and selection.
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}

@@ -5,6 +5,8 @@ import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { newAnsiState, renderAnsi } from "./ansi";
 import { cloudBadges, cloudParts, cloudSummary, openCloudSettings, providerLogo, type CloudSetting } from "./cloudSettings";
 import { fileIcon, fileKind, icons } from "./icons";
+import { openSettings } from "./settings";
+import { PLAN_EVENT, closeEditorWindows, closeFrontDialog, type PlanRequest } from "./windows";
 import { openImportDialog, type ImportRequest } from "./importDialog";
 import { initSystemColors } from "./systemColors";
 import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
@@ -322,6 +324,29 @@ let cloudFolders: Record<string, Record<string, string>> = {};
 /** Saving sends `cloud://changed` to every window, which refreshes what shows settings. */
 const editCloud = (dir: string) => void openCloudSettings(dir, relName(dir), relName);
 
+async function openFileEditor(path: string) {
+  try {
+    await invoke("open_file_editor", { path });
+  } catch (e) {
+    await message(String(e), { title: "Can't open file", kind: "error" });
+  }
+}
+
+// Gestalt › Settings… (⌘,) in the app menu.
+listen("menu://settings", () => openSettings());
+
+// Plan from one of this window's file editor windows: run here and come
+// forward to show it.
+listen<PlanRequest>(PLAN_EVENT, ({ payload }) => {
+  void startPlan(payload.dir);
+  void appWindow.setFocus();
+});
+
+// File › Close (⌘W): the front dialog, else the window.
+listen("menu://close", () => {
+  if (!closeFrontDialog()) void appWindow.close();
+});
+
 // Workspace menu items, sent to the window in front.
 listen("menu://clean-all", () => {
   if (currentRoot) void cleanCaches(currentRoot);
@@ -361,8 +386,35 @@ $("cloud-status").onclick = () => {
   if (currentRoot) editCloud(currentRoot);
 };
 
-/** Folder menu. tofu commands only for folders with a main.tf (isModule). */
-async function showContextMenu(dir: string, isModule: boolean) {
+/**
+ * Move a file or folder to the Trash, after asking. A symlink goes as a link:
+ * what it points to stays.
+ */
+async function trashEntry(entry: DirEntry) {
+  const what = entry.isDir ? `the folder "${entry.name}" and everything in it` : `"${entry.name}"`;
+  const link = entry.isSymlink ? "\n\nIt's a symbolic link: only the link is removed, not what it points to." : "";
+  const ok = await ask(`Move ${what} to the Trash?\n\n${relName(entry.path)}${link}`, {
+    title: "Move to Trash",
+    kind: "warning",
+    okLabel: "Move to Trash",
+    cancelLabel: "Cancel",
+  });
+  if (!ok) return;
+  try {
+    await invoke("move_to_trash", { path: entry.path });
+  } catch (e) {
+    await message(String(e), { title: "Move to Trash", kind: "error" });
+    return;
+  }
+  if (selectedPath === entry.path) selectedPath = null;
+  await renderTree();
+}
+
+/**
+ * Right-click menu for `entry` (a folder, or a file showing its folder's
+ * menu). tofu commands only for folders with a main.tf (isModule).
+ */
+async function showContextMenu(dir: string, isModule: boolean, entry: DirEntry) {
   const item = (text: string, action: () => void) => MenuItem.new({ text, action });
   const tofuItems = isModule
     ? [
@@ -373,6 +425,12 @@ async function showContextMenu(dir: string, isModule: boolean) {
         await PredefinedMenuItem.new({ item: "Separator" }),
       ]
     : [];
+  // Anything but the opened folder itself, named so a file's entry isn't
+  // mistaken for its folder's.
+  const trashItems =
+    entry.path === currentRoot
+      ? []
+      : [await PredefinedMenuItem.new({ item: "Separator" }), await item(`Move "${entry.name}" to Trash…`, () => void trashEntry(entry))];
   const menu = await Menu.new({
     items: [
       ...tofuItems,
@@ -380,6 +438,7 @@ async function showContextMenu(dir: string, isModule: boolean) {
       await item("Cloud Settings…", () => editCloud(dir)),
       // Any folder: this folder and everything below it.
       await item("Clean .terraform Caches…", () => void cleanCaches(dir)),
+      ...trashItems,
     ],
   });
   await menu.popup();
@@ -397,6 +456,16 @@ function selectRow(row: HTMLElement, path: string) {
   selectedPath = path;
 }
 
+/** A link icon after the label of a symlinked file or folder. */
+function linkBadge(entry: DirEntry): HTMLElement[] {
+  if (!entry.isSymlink) return [];
+  const badge = document.createElement("span");
+  badge.className = "link-badge";
+  badge.innerHTML = icons.link;
+  badge.title = "Symbolic link: changes affect everywhere it's linked from";
+  return [badge];
+}
+
 /** A file row. Right-clicking it offers the run menu for its folder. */
 function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLIElement {
   const li = document.createElement("li");
@@ -406,7 +475,6 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   const row = document.createElement("div");
   row.className = `tree-row file file-${kind}` + (entry.path === selectedPath ? " selected" : "");
   row.style.paddingLeft = `${depth * 14 + 6}px`;
-  row.title = entry.path;
 
   const caret = document.createElement("span");
   caret.className = "caret";
@@ -416,14 +484,17 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;
-  row.append(caret, icon, label);
+  row.append(caret, icon, label, ...linkBadge(entry));
 
   row.onclick = () => selectRow(row, entry.path);
+  row.title = `${entry.path}\nDouble-click to edit`;
+  // Files open in their own editor window (or bring it forward).
+  row.ondblclick = () => void openFileEditor(entry.path);
   row.oncontextmenu = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     selectRow(row, entry.path);
-    void showContextMenu(parent.path, parent.isModule);
+    void showContextMenu(parent.path, parent.isModule, entry);
   };
 
   li.append(row);
@@ -454,7 +525,7 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
   label.className = "label";
   label.textContent = entry.name;
 
-  row.append(caret, icon, label);
+  row.append(caret, icon, label, ...linkBadge(entry));
   if (entry.isModule) {
     const badge = document.createElement("span");
     badge.className = "badge";
@@ -501,7 +572,7 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
     ev.preventDefault();
     ev.stopPropagation();
     selectRow(row, entry.path);
-    void showContextMenu(entry.path, entry.isModule);
+    void showContextMenu(entry.path, entry.isModule, entry);
   };
 
   if (entry.hasChildren && expanded.has(entry.path)) {
@@ -682,18 +753,22 @@ $("env-status").textContent = "loading env…";
 invoke<EnvStatus>("shell_env_status").then(renderEnvStatus).catch(console.error);
 refreshTofuVersion();
 
-// Closing a window cancels its runs: check first.
+// Closing a window cancels its runs: check first. Then it closes its file
+// editor windows, so their changes are saved (or the user is asked); it
+// stays open if one does.
 appWindow
   .onCloseRequested(async (ev) => {
     const running = [...runs.values()].filter((r) => r.status === "running" && r.kind !== "clean").length;
-    if (!running) return;
-    const ok = await ask(`${running} tofu run${running > 1 ? "s are" : " is"} still running in this window. Cancel and close?`, {
-      title: "Close window",
-      kind: "warning",
-      okLabel: "Cancel runs and close",
-      cancelLabel: "Keep open",
-    });
-    if (!ok) ev.preventDefault();
+    if (running) {
+      const ok = await ask(`${running} tofu run${running > 1 ? "s are" : " is"} still running in this window. Cancel and close?`, {
+        title: "Close window",
+        kind: "warning",
+        okLabel: "Cancel runs and close",
+        cancelLabel: "Keep open",
+      });
+      if (!ok) return ev.preventDefault();
+    }
+    if (!(await closeEditorWindows(appWindow.label))) ev.preventDefault();
   })
   .catch(console.error);
 

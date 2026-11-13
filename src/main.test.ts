@@ -22,6 +22,11 @@ const m = vi.hoisted(() => ({
   message: vi.fn(),
   open: vi.fn(),
   openCloudSettings: vi.fn(),
+  openSettings: vi.fn(),
+  closeEditorWindows: vi.fn(),
+  closeFrontDialog: vi.fn(),
+  windowClose: vi.fn(),
+  setFocus: vi.fn(),
   openImportDialog: vi.fn(),
   initSystemColors: vi.fn(),
   initSidebar: vi.fn(),
@@ -37,6 +42,8 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
     listen: m.listen,
     setTitle: m.setTitle,
     onCloseRequested: m.onCloseRequested,
+    close: m.windowClose,
+    setFocus: m.setFocus,
   }),
 }));
 vi.mock("@tauri-apps/api/menu", () => ({
@@ -54,6 +61,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: m.ask, message: m.message, op
 vi.mock("./cloudSettings", async (actual) => ({
   ...(await actual<typeof import("./cloudSettings")>()),
   openCloudSettings: m.openCloudSettings,
+}));
+vi.mock("./settings", () => ({ openSettings: m.openSettings }));
+vi.mock("./windows", () => ({
+  closeEditorWindows: m.closeEditorWindows,
+  closeFrontDialog: m.closeFrontDialog,
+  PLAN_EVENT: "editor://plan",
 }));
 vi.mock("./importDialog", () => ({ openImportDialog: m.openImportDialog }));
 vi.mock("./systemColors", () => ({ initSystemColors: m.initSystemColors }));
@@ -74,9 +87,10 @@ const dir = (path: string, extra: Partial<DirEntry> = {}): DirEntry => ({
   isDir: true,
   hasChildren: true,
   isModule: false,
+  isSymlink: false,
   ...extra,
 });
-const file = (path: string): DirEntry => dir(path, { isDir: false, hasChildren: false });
+const file = (path: string, extra: Partial<DirEntry> = {}): DirEntry => dir(path, { isDir: false, hasChildren: false, ...extra });
 
 /** A small infra repo: list_dir results by folder. */
 const fs: Record<string, DirEntry[]> = {
@@ -87,7 +101,12 @@ const fs: Record<string, DirEntry[]> = {
     file("/repo/README.md"),
   ],
   "/repo/envs": [dir("/repo/envs/prod", { isModule: true }), file("/repo/envs/common.tfvars")],
-  "/repo/envs/prod": [file("/repo/envs/prod/main.tf"), file("/repo/envs/prod/prod.tfvars")],
+  "/repo/envs/prod": [
+    dir("/repo/envs/prod/shared", { isSymlink: true, hasChildren: false }),
+    file("/repo/envs/prod/main.tf"),
+    file("/repo/envs/prod/prod.tfvars"),
+    file("/repo/envs/prod/providers.tf", { isSymlink: true }),
+  ],
 };
 
 const PLAN_LINE = "Plan: 2 to add, 0 to change, 0 to destroy.";
@@ -206,6 +225,7 @@ beforeEach(() => {
     closeRequested = cb;
     return () => {};
   });
+  m.closeEditorWindows.mockResolvedValue(true);
   m.resetCommits.mockResolvedValue(undefined);
   m.refreshCommits.mockResolvedValue(undefined);
   m.refreshUncommitted.mockResolvedValue(undefined);
@@ -502,7 +522,7 @@ describe("folder tree", () => {
 
     const readme = row("README.md");
     expect(readme.className).toBe("tree-row file file-text");
-    expect(readme.title).toBe("/repo/README.md");
+    expect(readme.title).toBe("/repo/README.md\nDouble-click to edit");
     expect(readme.querySelector(".icon")!.innerHTML).toBe(html(icons.fileText));
   });
 
@@ -522,6 +542,7 @@ describe("folder tree", () => {
     expect(row("main.tf").className).toBe("tree-row file file-tofu");
     expect(row("prod.tfvars").className).toBe("tree-row file file-vars");
     expect(row("prod.tfvars").style.paddingLeft).toBe("48px");
+    expect(row("prod.tfvars").title).toBe("/repo/envs/prod/prod.tfvars\nDouble-click to edit");
 
     const listCalls = invoked("list_dir").length;
     row("envs").click();
@@ -621,6 +642,78 @@ describe("folder tree", () => {
     expect(treeLabels()).toContain("envs");
     expect(document.querySelector(".tree .cloud-logo")).toBeNull();
   });
+
+  it("opens any other file in its own editor window on double-click", async () => {
+    await bootRepo({ handlers: { open_file_editor: () => undefined } });
+    row("README.md").dispatchEvent(new MouseEvent("dblclick"));
+    await flush();
+    expect(invoked("open_file_editor")).toEqual([{ path: "/repo/README.md" }]);
+    expect(m.message).not.toHaveBeenCalled();
+  });
+
+  it("reports a file that can't be opened", async () => {
+    await bootRepo({
+      handlers: {
+        open_file_editor: () => {
+          throw "/repo/README.md is not a file inside /repo";
+        },
+      },
+    });
+    row("README.md").dispatchEvent(new MouseEvent("dblclick"));
+    await flush();
+    expect(m.message).toHaveBeenCalledWith("/repo/README.md is not a file inside /repo", { title: "Can't open file", kind: "error" });
+  });
+
+  it("closes the front dialog on ⌘W, else the window", async () => {
+    await bootRepo();
+    m.closeFrontDialog.mockReturnValueOnce(true);
+    emit("menu://close");
+    expect(m.windowClose).not.toHaveBeenCalled();
+    m.closeFrontDialog.mockReturnValueOnce(false);
+    emit("menu://close");
+    expect(m.windowClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the window open if one of its editor windows won't close", async () => {
+    m.windowLabel = "workspace-2";
+    await bootRepo();
+    const ev = { preventDefault: vi.fn() };
+    await closeRequested!(ev);
+    expect(m.closeEditorWindows).toHaveBeenLastCalledWith("workspace-2");
+    expect(ev.preventDefault).not.toHaveBeenCalled();
+    m.closeEditorWindows.mockResolvedValueOnce(false);
+    await closeRequested!(ev);
+    expect(ev.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it("plans for a file editor window, coming forward to show it", async () => {
+    await bootRepo({ handlers: { run_plan: () => 7 } });
+    emit("editor://plan", { dir: "/repo/envs/prod" });
+    await flush();
+    expect(invoked("run_plan")).toEqual([{ dir: "/repo/envs/prod" }]);
+    expect(m.setFocus).toHaveBeenCalledTimes(1);
+    expect(byId("run-title").textContent).toBe("tofu plan — /repo/envs/prod");
+  });
+
+  it("marks symlinked files and folders", async () => {
+    await bootRepo();
+    row("envs").click();
+    await flush();
+    row("prod").click();
+    await flush();
+    const badge = row("providers.tf").querySelector(".link-badge")!;
+    expect(badge.innerHTML).toBe(html(icons.link));
+    expect((badge as HTMLElement).title).toBe("Symbolic link: changes affect everywhere it's linked from");
+    expect(row("shared").querySelector(".link-badge")).not.toBeNull();
+    expect(row("main.tf").querySelector(".link-badge")).toBeNull();
+    expect(row("prod").querySelector(".link-badge")).toBeNull();
+  });
+
+  it("opens Settings from the app menu", async () => {
+    await bootRepo();
+    emit("menu://settings");
+    expect(m.openSettings).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("context menus", () => {
@@ -632,10 +725,24 @@ describe("context menus", () => {
     await flush();
     expect(ev.defaultPrevented).toBe(true);
     expect(row("prod").classList.contains("selected")).toBe(true);
-    expect(menuTexts()).toEqual(["Import…", "Plan", "Apply…", "--Separator", "Cloud Settings…", "Clean .terraform Caches…"]);
+    expect(menuTexts()).toEqual([
+      "Import…",
+      "Plan",
+      "Apply…",
+      "--Separator",
+      "Cloud Settings…",
+      "Clean .terraform Caches…",
+      "--Separator",
+      'Move "prod" to Trash…',
+    ]);
     expect(lastMenu().popup).toHaveBeenCalled();
 
     rightClick(row("envs"));
+    await flush();
+    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…", "--Separator", 'Move "envs" to Trash…']);
+
+    // The opened folder itself can't be trashed from here.
+    rightClick(row("/repo"));
     await flush();
     expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…"]);
   });
@@ -656,7 +763,7 @@ describe("context menus", () => {
 
     rightClick(row("README.md"));
     await flush();
-    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…"]);
+    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…", "--Separator", 'Move "README.md" to Trash…']);
     menuAction("Cloud Settings…");
     expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
     rightClick(row("envs"));
@@ -664,6 +771,77 @@ describe("context menus", () => {
     menuAction("Cloud Settings…");
     const [dir, shown, rel] = m.openCloudSettings.mock.lastCall!;
     expect([dir, shown, rel("/repo/envs/prod")]).toEqual(["/repo/envs", "envs", "envs/prod"]);
+  });
+
+  it("moves a file to the Trash after asking, then refreshes", async () => {
+    await bootRepo({ handlers: { move_to_trash: () => undefined } });
+    row("README.md").click();
+    rightClick(row("README.md"));
+    await flush();
+
+    m.ask.mockResolvedValueOnce(false);
+    menuAction('Move "README.md" to Trash…');
+    await flush();
+    expect(m.ask).toHaveBeenCalledWith('Move "README.md" to the Trash?\n\nREADME.md', {
+      title: "Move to Trash",
+      kind: "warning",
+      okLabel: "Move to Trash",
+      cancelLabel: "Cancel",
+    });
+    expect(invoked("move_to_trash")).toEqual([]);
+
+    const opens = invoked("open_root").length;
+    m.ask.mockResolvedValueOnce(true);
+    menuAction('Move "README.md" to Trash…');
+    await flush();
+    expect(invoked("move_to_trash")).toEqual([{ path: "/repo/README.md" }]);
+    expect(invoked("open_root")).toHaveLength(opens + 1);
+    expect(document.querySelector(".tree-row.selected")).toBeNull();
+  });
+
+  it("explains trashing a folder and a symlink", async () => {
+    await bootRepo({ handlers: { move_to_trash: () => undefined } });
+    row("envs").click();
+    await flush();
+    row("prod").click();
+    await flush();
+    m.ask.mockResolvedValue(true);
+
+    rightClick(row("prod"));
+    await flush();
+    menuAction('Move "prod" to Trash…');
+    await flush();
+    expect(m.ask.mock.lastCall![0]).toBe('Move the folder "prod" and everything in it to the Trash?\n\nenvs/prod');
+
+    rightClick(row("providers.tf"));
+    await flush();
+    // Another row selected meanwhile keeps its selection.
+    row("main.tf").click();
+    menuAction('Move "providers.tf" to Trash…');
+    await flush();
+    expect(m.ask.mock.lastCall![0]).toBe(
+      'Move "providers.tf" to the Trash?\n\nenvs/prod/providers.tf\n\nIt\'s a symbolic link: only the link is removed, not what it points to.',
+    );
+    expect(invoked("move_to_trash")).toHaveLength(2);
+    expect(row("main.tf").classList.contains("selected")).toBe(true);
+  });
+
+  it("reports a failed move to the Trash", async () => {
+    await bootRepo({
+      handlers: {
+        move_to_trash: () => {
+          throw "Couldn't move /repo/README.md to the Trash: busy";
+        },
+      },
+    });
+    rightClick(row("README.md"));
+    await flush();
+    m.ask.mockResolvedValueOnce(true);
+    const opens = invoked("open_root").length;
+    menuAction('Move "README.md" to Trash…');
+    await flush();
+    expect(m.message).toHaveBeenCalledWith("Couldn't move /repo/README.md to the Trash: busy", { title: "Move to Trash", kind: "error" });
+    expect(invoked("open_root")).toHaveLength(opens);
   });
 
   it("runs Plan and Apply… from the menu", async () => {

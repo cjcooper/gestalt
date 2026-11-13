@@ -915,3 +915,109 @@ dialog.cloud-dialog {
 .cloud-dialog .modal-body > .hint {
   margin: 12px 0 0;
 }
+
+/* ---- File editor window (editor.html) ---- */
+
+body.editor-window {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Always shown for a symlinked file: edits reach every place linking to it. */
+.link-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, var(--bg));
+}
+.link-warning svg {
+  flex: none;
+}
+.link-warning code {
+  font-weight: 600;
+}
+
+/* Action bar along the top. */
+.action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+}
+.icon-button:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--border);
+}
+.link-badge {
+  display: inline-flex;
+  margin-left: 4px;
+  color: var(--muted);
+}
+.link-badge svg {
+  width: 12px;
+  height: 12px;
+}
+.run-actions {
+  display: inline-flex;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.run-actions button {
+  font-size: 12px;
+}
+.action-bar .hint,
+.action-bar .file-lang {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.action-bar .file-lang {
+  flex: none;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.file-status {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.file-status.dirty {
+  color: var(--warn);
+}
+.code-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.editor-window .notice {
+  margin: 0;
+  border-radius: 0;
+  border-width: 1px 0 0;
+}
+
+/* ---- Settings ---- */
+
+dialog.settings {
+  width: min(460px, calc(100vw - 32px));
+}

@@ -5,7 +5,7 @@
 //! arguments to [`second_instance`]: each folder opens in a new window, or
 //! brings forward the window that already has it open.
 
-use crate::{tofu, watch};
+use crate::{editor_window, tofu, watch};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -38,6 +38,13 @@ impl Windows {
     pub fn root_for(&self, window: &str) -> Option<PathBuf> {
         let open = self.roots.lock().unwrap().get(window).cloned();
         open.or_else(|| self.pending.lock().unwrap().get(window).cloned())
+    }
+
+    /// The folder `window` works in: its own, or for a file editor window,
+    /// that of the workspace window it was opened from.
+    pub fn workspace_root(&self, window: &str) -> Option<PathBuf> {
+        let owner = editor_window::owner(window).unwrap_or(window);
+        self.roots.lock().unwrap().get(owner).cloned()
     }
 
     fn window_with(&self, root: &Path) -> Option<String> {
@@ -89,7 +96,7 @@ fn focus<R: Runtime>(window: &WebviewWindow<R>) {
     let _ = window.set_focus();
 }
 
-fn is_workspace(label: &str) -> bool {
+pub(crate) fn is_workspace(label: &str) -> bool {
     label == MAIN || label.starts_with(PREFIX)
 }
 
@@ -136,6 +143,16 @@ pub fn focused<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
         .into_iter()
         .find(|(label, w)| is_workspace(label) && w.is_focused().unwrap_or(false))
         .map(|(label, _)| label)
+}
+
+/// The workspace window in front, or the one a file editor in front was
+/// opened from.
+pub fn front_workspace<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let (label, _) = app.webview_windows().into_iter().find(|(_, w)| w.is_focused().unwrap_or(false))?;
+    match editor_window::owner(&label) {
+        Some(owner) => Some(owner.to_string()),
+        None => is_workspace(&label).then_some(label),
+    }
 }
 
 /// `window` closed: stop watching its folder, cancel its runs and drop its plans.
@@ -236,10 +253,22 @@ mod tests {
         assert_eq!(windows.window_with(&base), None);
         // Mock windows never have focus.
         assert_eq!(focused(h), None);
+        assert_eq!(front_workspace(h), None);
         assert!(is_workspace(MAIN) && is_workspace("workspace-9") && !is_workspace("about"));
         report(Ok(()));
         report(Err(tauri::Error::WindowNotFound));
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn editor_windows_work_in_their_workspace_windows_folder() {
+        let windows = Windows::default();
+        windows.set_root("workspace-2", Path::new("/b"));
+        let editor = editor_window::label_for("workspace-2", "/b/main.tf");
+        assert_eq!(windows.workspace_root(&editor), Some(PathBuf::from("/b")));
+        assert_eq!(windows.workspace_root("workspace-2"), Some(PathBuf::from("/b")));
+        assert_eq!(windows.workspace_root(&editor_window::label_for("main", "/b/main.tf")), None);
+        assert_eq!(windows.workspace_root("about"), None);
     }
 
     #[test]

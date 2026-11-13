@@ -14,6 +14,9 @@ pub struct DirEntry {
     /// Folder contains a `main.tf`: a root module Gestalt runs tofu in
     /// (same rule as the Commits tab).
     pub is_module: bool,
+    /// A symlink (to a file or folder): edits change the real one, wherever
+    /// else it's linked from.
+    pub is_symlink: bool,
 }
 
 /// Entries never worth showing: dotfiles, and dependency folders.
@@ -46,6 +49,7 @@ pub fn entry(path: &Path) -> DirEntry {
         is_dir,
         has_children: is_dir && visible(path).next().is_some(),
         is_module: is_dir && is_module(path),
+        is_symlink: std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()),
     }
 }
 
@@ -115,7 +119,8 @@ mod tests {
 
         let entries = list_dir(&base.join("tree")).unwrap();
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].name == "linked" && entries[0].is_dir && entries[0].is_module);
+        assert!(entries[0].name == "linked" && entries[0].is_dir && entries[0].is_module && entries[0].is_symlink);
+        assert!(!list_dir(&base).unwrap().iter().any(|e| e.is_symlink));
         fs::remove_dir_all(&base).unwrap();
     }
 

@@ -12,6 +12,8 @@ export interface DirEntry {
   isDir: boolean;
   hasChildren: boolean;
   isModule: boolean;
+  /** A symlink: edits change the real file, wherever else it's linked from. */
+  isSymlink: boolean;
 }
 
 export interface OutputEvent {
