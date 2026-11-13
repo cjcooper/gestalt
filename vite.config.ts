@@ -12,12 +12,14 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // Two pages: the main window and the About window (src-tauri/src/lib.rs).
+  // Three pages: the main window, the About window (src-tauri/src/app.rs) and
+  // file editor windows (src-tauri/src/editor_window.rs).
   build: {
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("index.html", import.meta.url)),
         about: fileURLToPath(new URL("about.html", import.meta.url)),
+        editor: fileURLToPath(new URL("editor.html", import.meta.url)),
       },
     },
   },

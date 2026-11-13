@@ -9,6 +9,29 @@ Caches…** to remove every `.terraform` folder and `.terraform.lock.hcl` in it
 and below, or use **Workspace › Clean All .terraform Caches…** for the whole
 opened folder. The next plan re-runs `tofu init` to download them again.
 
+Right-click a file or folder and choose **Move "…" to Trash…** to delete it
+(after a confirmation; it goes to the system Trash, so it can be restored).
+A symlink is removed as a link: what it points to stays.
+
+Double-click a file in the tree to edit it in its own window, with syntax
+highlighting (HCL for `.tf`/`.tfvars`, plus JSON, YAML, Markdown, shell and
+more). It's a normal window, so you can switch back to the tree and plan
+while it stays open. ⌘S saves (or the Save button in the bar at the top) and
+⌘W closes. By default changes also save when you close the window or click
+away from it, e.g. back to the main window to run a plan; turn that off
+under **Settings… › Save automatically** (⌘,) and closing with unsaved
+changes asks first. A save is refused if the file changed on disk since you
+opened it, unless you choose to overwrite. For a file in a module folder
+(one with a `main.tf`), **Plan** in the editor's bar saves the file and plans
+in the main window, which comes forward to show the output.
+
+Symlinks show a link icon in the tree. A linked file (say a shared
+`providers.tf` linked into many modules) opens with a warning bar naming the
+real file: changes there affect every place that links to it. It still
+belongs to the folder you opened it from, so Plan runs there.
+Closing the main window closes the editor windows first. `.gestalt.env`
+files still open in their own editor.
+
 ## Development
 
 ```sh
@@ -30,7 +53,8 @@ pnpm coverage:rust      # backend: lines and functions (needs cargo-llvm-cov)
 
 The Rust check leaves out only code with nothing to assert on, kept in its own
 files for that reason: `main.rs`, `app.rs` (the Tauri builder),
-`system_colors/mac.rs` (AppKit calls) and `src/probes/` (manual `#[ignore]`
+`system_colors/mac.rs` (AppKit calls), `os_trash.rs` (the system Trash call;
+what may be deleted is checked in `delete.rs`) and `src/probes/` (manual `#[ignore]`
 checks against real repos). New logic belongs elsewhere, under test.
 
 ### Code signing (macOS)

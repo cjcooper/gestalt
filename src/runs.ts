@@ -13,6 +13,8 @@ export interface DirEntry {
   hasChildren: boolean;
   isModule: boolean;
   hasEnvFile: boolean;
+  /** A symlink: edits change the real file, wherever else it's linked from. */
+  isSymlink: boolean;
 }
 
 export interface OutputEvent {

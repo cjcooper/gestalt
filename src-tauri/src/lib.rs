@@ -1,10 +1,14 @@
 mod clean;
+mod delete;
+mod editor_window;
 mod env_edit;
 mod env_file;
+mod file_edit;
 mod fs;
 mod git;
 mod module_info;
 mod order;
+mod os_trash;
 mod shell_env;
 mod system_colors;
 mod tofu;
