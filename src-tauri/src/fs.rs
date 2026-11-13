@@ -1,6 +1,5 @@
 //! Folder browsing for the tree view.
 
-use crate::env_file;
 use serde::Serialize;
 use std::path::Path;
 
@@ -15,18 +14,11 @@ pub struct DirEntry {
     /// Folder contains a `main.tf`: a root module Gestalt runs tofu in
     /// (same rule as the Commits tab).
     pub is_module: bool,
-    /// Folder has its own `.gestalt.env`.
-    pub has_env_file: bool,
 }
 
-/// Entries never worth showing. Dotfiles are hidden except `.gestalt.env`,
-/// which affects how tofu runs.
+/// Entries never worth showing: dotfiles, and dependency folders.
 fn is_hidden(name: &str, is_dir: bool) -> bool {
-    if is_dir {
-        name.starts_with('.') || name == "node_modules"
-    } else {
-        name.starts_with('.') && name != env_file::FILE_NAME
-    }
+    name.starts_with('.') || (is_dir && name == "node_modules")
 }
 
 /// Visible entries of `dir` as (name, path, is_dir).
@@ -54,7 +46,6 @@ pub fn entry(path: &Path) -> DirEntry {
         is_dir,
         has_children: is_dir && visible(path).next().is_some(),
         is_module: is_dir && is_module(path),
-        has_env_file: is_dir && path.join(env_file::FILE_NAME).is_file(),
     }
 }
 
@@ -83,7 +74,7 @@ mod tests {
             fs::write(p, "").unwrap();
         };
         mk("Zeta/main.tf");
-        mk("alpha/.gestalt.env");
+        mk("alpha/x.tf");
         mk("alpha/.hidden");
         mk("empty/.DS_Store");
         mk("b.tf");
@@ -95,18 +86,18 @@ mod tests {
 
         let entries = list_dir(&base).unwrap();
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["alpha", "empty", "Zeta", ".gestalt.env", "A.md", "b.tf"]);
+        assert_eq!(names, ["alpha", "empty", "Zeta", "A.md", "b.tf"]);
 
         let get = |n: &str| entries.iter().find(|e| e.name == n).unwrap();
         let zeta = get("Zeta");
-        assert!(zeta.is_dir && zeta.is_module && zeta.has_children && !zeta.has_env_file);
+        assert!(zeta.is_dir && zeta.is_module && zeta.has_children);
         assert_eq!(zeta.path, base.join("Zeta").to_string_lossy());
         let alpha = get("alpha");
-        assert!(alpha.is_dir && !alpha.is_module && alpha.has_children && alpha.has_env_file);
+        assert!(alpha.is_dir && !alpha.is_module && alpha.has_children);
         // Only hidden entries inside: no expand arrow.
         assert!(!get("empty").has_children);
         let file = get("b.tf");
-        assert!(!file.is_dir && !file.has_children && !file.is_module && !file.has_env_file);
+        assert!(!file.is_dir && !file.has_children && !file.is_module);
 
         fs::remove_dir_all(&base).unwrap();
     }

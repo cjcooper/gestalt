@@ -1,6 +1,5 @@
 mod clean;
-mod env_edit;
-mod env_file;
+mod cloud;
 mod fs;
 mod git;
 mod module_info;
@@ -9,11 +8,13 @@ mod shell_env;
 mod system_colors;
 mod tofu;
 mod watch;
+mod windows;
 
 use shell_env::{EnvStatus, ShellEnv};
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Runtime, State};
+use std::path::Path;
+use tauri::{Manager, Runtime, State, Webview};
+use windows::Windows;
 
 
 #[tauri::command]
@@ -33,11 +34,24 @@ struct InitialRoot {
     source: &'static str,
 }
 
-/// Folder to open at startup, if one is configured: a directory passed on the
-/// command line, else `GESTALT_ROOT` from the app env or the login shell.
-/// Returns `None` to let the UI fall back to the last opened folder.
+/// Folder a window opens with. A window opened for a folder (`gestalt
+/// <folder>` while running) gets that one, and any window keeps its folder
+/// across a reload. The launch window gets a folder passed on the command
+/// line, else `GESTALT_ROOT` from the app env or the login shell. `None` lets
+/// the UI fall back to the last opened folder (launch window) or the welcome
+/// panel.
 #[tauri::command]
-async fn initial_root(shell_env: State<'_, ShellEnv>) -> Result<Option<InitialRoot>, String> {
+async fn initial_root<R: Runtime>(
+    webview: Webview<R>,
+    windows: State<'_, Windows>,
+    shell_env: State<'_, ShellEnv>,
+) -> Result<Option<InitialRoot>, String> {
+    if let Some(root) = windows.root_for(webview.label()) {
+        return Ok(Some(InitialRoot { path: root.to_string_lossy().into_owned(), source: "command line" }));
+    }
+    if webview.label() != windows::MAIN {
+        return Ok(None);
+    }
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     Ok(find_initial_root(args.into_iter(), std::env::var_os("GESTALT_ROOT"), std::env::var_os("HOME"), &shell_env).await)
 }
@@ -50,14 +64,7 @@ async fn find_initial_root(
     shell_env: &ShellEnv,
 ) -> Option<InitialRoot> {
     // `~/...` expanded, then only if it is an existing directory.
-    let usable = |p: OsString| {
-        let p = PathBuf::from(p);
-        let p = match (p.strip_prefix("~"), &home) {
-            (Ok(rest), Some(home)) => Path::new(home).join(rest),
-            _ => p,
-        };
-        p.canonicalize().ok().filter(|p| p.is_dir())
-    };
+    let usable = |p: OsString| windows::folder_arg(p, None, home.as_deref());
     let configured = |v: Option<OsString>| v.filter(|v| !v.is_empty()).and_then(usable);
 
     // macOS may pass non-path args (e.g. -psn_...) when launched from Finder.
@@ -78,17 +85,18 @@ fn list_dir(path: String) -> Result<Vec<fs::DirEntry>, String> {
     fs::list_dir(Path::new(&path))
 }
 
-/// Set the workspace root (bounds `.gestalt.env` lookup) and describe it.
+/// Record the calling window's folder, watch it, and describe it.
 #[tauri::command]
-fn open_root<R: Runtime>(app: AppHandle<R>, workspace: State<'_, tofu::Workspace>, path: String) -> Result<fs::DirEntry, String> {
+fn open_root<R: Runtime>(webview: Webview<R>, windows: State<'_, Windows>, path: String) -> Result<fs::DirEntry, String> {
     let path = Path::new(&path);
     if !path.is_dir() {
         return Err(format!("{} is not a directory", path.display()));
     }
-    let previous = workspace.root.lock().unwrap().replace(path.to_path_buf());
+    let window = webview.label().to_string();
+    let previous = windows.set_root(&window, path);
     // Also called on every tree refresh: only (re)start watching for a new root.
     if previous.as_deref() != Some(path) {
-        tauri::async_runtime::spawn(watch::start(app, path.to_path_buf()));
+        tauri::async_runtime::spawn(watch::start(webview.app_handle().clone(), window, path.to_path_buf()));
     }
     Ok(fs::entry(path))
 }
@@ -157,10 +165,15 @@ mod tests {
     fn app(shell: ShellEnv) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
             .manage(shell)
-            .manage(tofu::Workspace::default())
+            .manage(Windows::default())
             .manage(watch::WorkspaceWatcher::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap()
+    }
+
+    fn view(app: &tauri::App<tauri::test::MockRuntime>, label: &str) -> Webview<tauri::test::MockRuntime> {
+        let w = tauri::WebviewWindowBuilder::new(app, label, Default::default()).build().unwrap();
+        w.as_ref().clone()
     }
 
     #[test]
@@ -169,7 +182,7 @@ mod tests {
         let app = app(shell_with_root(Some(&dir)));
         // Whatever the test binary's own args and env hold, the command
         // resolves them like `find_initial_root` does.
-        let root = block_on(initial_root(app.state())).unwrap().expect("a root");
+        let root = block_on(initial_root(view(&app, "main"), app.state(), app.state())).unwrap().expect("a root");
         let expected = block_on(find_initial_root(
             std::env::args_os().skip(1),
             std::env::var_os("GESTALT_ROOT"),
@@ -178,6 +191,20 @@ mod tests {
         ))
         .unwrap();
         assert_eq!((root.path, root.source), (expected.path, expected.source));
+    }
+
+    #[test]
+    fn other_windows_open_their_own_folder_or_none() {
+        let dir = temp_dir("lib-initial-root-window");
+        let app = app(shell_with_root(Some(&dir)));
+        let other = view(&app, "workspace-1");
+        assert!(block_on(initial_root(other.clone(), app.state(), app.state())).unwrap().is_none());
+
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        app.state::<Windows>().set_root("workspace-1", &sub);
+        let root = block_on(initial_root(other, app.state(), app.state())).unwrap().unwrap();
+        assert_eq!((root.path, root.source), (sub.to_string_lossy().into_owned(), "command line"));
     }
 
     #[test]
@@ -204,11 +231,12 @@ mod tests {
     }
 
     #[test]
-    fn open_root_sets_the_workspace_root() {
+    fn open_root_sets_the_window_root() {
         let dir = temp_dir("lib-open-root");
         let app = app(shell_with_root(None));
-        let root = || app.state::<tofu::Workspace>().root.lock().unwrap().clone();
-        let open = |p: &Path| open_root(app.handle().clone(), app.state(), p.to_string_lossy().into());
+        let main = view(&app, "main");
+        let root = || app.state::<Windows>().root_for("main");
+        let open = |p: &Path| open_root(main.clone(), app.state(), p.to_string_lossy().into());
 
         let missing = dir.join("missing");
         assert_eq!(open(&missing).unwrap_err(), format!("{} is not a directory", missing.display()));
@@ -239,16 +267,19 @@ mod tests {
                 None => builder,
             };
             builder
-                .invoke_handler(tauri::generate_handler![shell_env_status, reload_shell_env, initial_root, list_dir])
+                .invoke_handler(tauri::generate_handler![shell_env_status, reload_shell_env, initial_root, list_dir, open_root])
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap()
         };
         let app = build(Some(shell_with_root(Some(&dir))));
+        app.manage(Windows::default());
+        app.manage(watch::WorkspaceWatcher::default());
         let view = webview(&app);
         let none = serde_json::json!({});
 
         assert_eq!(ipc(&view, "shell_env_status", none.clone()).unwrap()["varCount"], 1);
         assert!(ipc(&view, "initial_root", none.clone()).unwrap()["path"].is_string());
+        assert_eq!(ipc(&view, "open_root", serde_json::json!({"path": dir})).unwrap()["isDir"], true);
         let missing = dir.join("missing");
         assert_eq!(
             ipc(&view, "list_dir", serde_json::json!({"path": missing})).unwrap_err(),
@@ -265,5 +296,11 @@ mod tests {
         for cmd in ["shell_env_status", "reload_shell_env", "initial_root"] {
             assert!(ipc(&view, cmd, none.clone()).unwrap_err().as_str().unwrap().contains("state not managed"), "{cmd}");
         }
+        let err = ipc(&view, "open_root", serde_json::json!({"path": dir})).unwrap_err();
+        assert!(err.as_str().unwrap().contains("state not managed"), "{err}");
+        // Windows, but no shell environment.
+        app.manage(Windows::default());
+        let err = ipc(&view, "initial_root", none.clone()).unwrap_err();
+        assert!(err.as_str().unwrap().contains("state not managed"), "{err}");
     }
 }

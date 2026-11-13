@@ -12,12 +12,11 @@ export interface DirEntry {
   isDir: boolean;
   hasChildren: boolean;
   isModule: boolean;
-  hasEnvFile: boolean;
 }
 
 export interface OutputEvent {
   runId: number;
-  /** "gestalt" lines are the app's own notes, e.g. which .gestalt.env files applied. */
+  /** "gestalt" lines are the app's own notes, e.g. which cloud settings applied. */
   stream: "stdout" | "stderr" | "gestalt";
   line: string;
 }

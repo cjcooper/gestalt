@@ -127,14 +127,31 @@ killall ibtoold; PATH="$PWD/src-tauri/target/actool-shim:$PATH" pnpm tauri build
 Never commit the `.p8` key or the password (`*.p8` and `private_keys/` are
 git-ignored).
 
-## Startup folder
+## Opening folders from a terminal
 
-Gestalt opens the first of:
+```sh
+gestalt ~/src/infra            # open a folder in its own window
+gestalt infra/accounts other   # several at once; no argument opens the current folder
+```
 
-1. A directory passed on the command line: `gestalt /path/to/infra`
-2. `GESTALT_ROOT`, from the app's environment or your login shell
+Each folder gets its own window, with its own runs. If Gestalt is already
+running, the folders open as new windows there; a folder that is already open
+brings its window forward. **Workspace › New Window** (⇧⌘N) opens an empty one.
+
+The `gestalt` command ships inside the app. Put it on your PATH once:
+
+```sh
+ln -s /Applications/Gestalt.app/Contents/Resources/cli/gestalt-cli /usr/local/bin/gestalt
+```
+
+(The Homebrew cask can do this with
+`binary "#{appdir}/Gestalt.app/Contents/Resources/cli/gestalt-cli", target: "gestalt"`.)
+
+Launched without a folder, the first window opens the first of:
+
+1. `GESTALT_ROOT`, from the app's environment or your login shell
    (e.g. `export GESTALT_ROOT=~/src/infra` in `~/.zshrc`)
-3. The folder you opened last
+2. The folder you opened last
 
 For `pnpm tauri dev`, set it in the gitignored `src-tauri/.cargo/config.toml`:
 
@@ -143,12 +160,41 @@ For `pnpm tauri dev`, set it in the gitignored `src-tauri/.cargo/config.toml`:
 GESTALT_ROOT = "/path/to/infra"
 ```
 
-## Environment
+## Cloud settings
 
-tofu runs with, lowest to highest precedence: the app's environment, your
-login shell's environment, then every `.gestalt.env` from the opened folder
-down to the module being run (deeper files override). See
-`src-tauri/src/env_file.rs` for the file format.
+Each folder can name the cloud account tofu uses there and in every folder
+below it: an AWS profile and region, a gcloud configuration and project, an
+Azure subscription and tenant. Click the cloud button in the toolbar (the open
+folder), right-click a folder, or use **Workspace › Cloud Settings…**. The
+choices come from `~/.aws/config` and `~/.aws/credentials`, `gcloud config
+configurations` and `az login`. Each field is inherited from the nearest
+folder above that sets it, and folders with settings of their own are marked
+in the tree.
+
+Settings are kept per computer in Gestalt's config folder
+(`~/Library/Application Support/com.it-problems.gestalt/cloud.json` on macOS),
+keyed by folder path, never in the repo, so everyone can use their own profile
+names.
+
+tofu runs with your login shell's environment plus the folder's cloud
+settings, which set:
+
+| Setting | Variables |
+| --- | --- |
+| AWS profile | `AWS_PROFILE` (and removes `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` inherited from the shell, which would win over it) |
+| AWS region | `AWS_REGION`, `AWS_DEFAULT_REGION` |
+| gcloud configuration | `CLOUDSDK_ACTIVE_CONFIG_NAME` |
+| Google Cloud project | `GOOGLE_PROJECT`, `CLOUDSDK_CORE_PROJECT` (default: the configuration's project) |
+| Azure subscription | `ARM_SUBSCRIPTION_ID` |
+| Azure tenant | `ARM_TENANT_ID` (default: the subscription's tenant) |
+
+Each run's output starts with the settings it used and the folder each came
+from.
+
+`.gestalt.env` files are no longer read. A run in a folder that still has one
+(in it or above it) stops with an error rather than quietly ignoring an
+`AWS_PROFILE` you relied on: set the account in Cloud Settings and delete the
+file.
 
 ## License
 

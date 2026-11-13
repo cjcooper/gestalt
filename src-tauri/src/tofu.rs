@@ -11,11 +11,11 @@
 //! continues its plan's run: it reports under the plan's run id, so init, plan
 //! and apply all land in one output pane (like `make apply`'s single stream).
 //!
-//! Events emitted:
+//! Events, sent only to the window that started the run:
 //! - `tofu://output` — one per output line ([`OutputEvent`])
 //! - `tofu://exit`   — once when the run ends ([`ExitEvent`])
 
-use crate::env_file;
+use crate::cloud::{self, CloudSettings};
 use crate::module_info::{self, ModuleInfo};
 use crate::shell_env::{EnvMap, ShellEnv};
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, Webview};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
@@ -96,6 +96,8 @@ impl Step {
 
 struct ActiveRun {
     dir: PathBuf,
+    /// Label of the window that started it.
+    window: String,
     pid: Option<u32>,
     interrupted: bool,
     kill: Option<oneshot::Sender<()>>,
@@ -103,13 +105,8 @@ struct ActiveRun {
 
 struct SavedPlan {
     dir: PathBuf,
+    window: String,
     file: PathBuf,
-}
-
-/// The folder opened in the UI. `.gestalt.env` lookup never goes above it.
-#[derive(Default)]
-pub struct Workspace {
-    pub root: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -180,52 +177,63 @@ struct ResolvedEnv {
     notes: Vec<String>,
 }
 
+/// Former per-folder env file. No longer read: refuse to run rather than
+/// silently drop an `AWS_PROFILE` someone relied on.
+const LEGACY_ENV_FILE: &str = ".gestalt.env";
+
+fn legacy_env_file(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().map(|d| d.join(LEGACY_ENV_FILE)).find(|f| f.exists())
+}
+
 /// The environment tofu runs with in `dir`, lowest to highest precedence:
-/// app process env, login-shell env, then each `.gestalt.env` from the
-/// workspace root down to `dir`. Notes name the files and variables applied
-/// (names only, never values).
+/// app process env, login-shell env, then the folder's cloud settings (see
+/// [`cloud`]). Notes say which settings applied.
 async fn effective_env<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<ResolvedEnv, String> {
     let shell = app.state::<ShellEnv>().get().await;
     let mut env: EnvMap = std::env::vars_os().collect();
     env.extend(shell.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-    // Canonicalize both so symlinked paths (e.g. /tmp -> /private/tmp) compare.
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let root = app.state::<Workspace>().root.lock().unwrap().as_deref().map(canon);
-    let dir = canon(dir);
-
-    let mut notes = Vec::new();
-    for file in env_file::chain(root.as_deref(), &dir) {
-        let shown = root
-            .as_deref()
-            .and_then(|r| file.strip_prefix(r).ok())
-            .unwrap_or(&file)
-            .display()
-            .to_string();
-        let content = std::fs::read_to_string(&file).map_err(|e| format!("{shown}: {e}"))?;
-        let effect = env_file::apply(&content, &mut env).map_err(|e| format!("{shown}: {e}"))?;
-        let mut parts = Vec::new();
-        if !effect.set.is_empty() {
-            parts.push(format!("sets {}", effect.set.join(", ")));
-        }
-        if !effect.unset.is_empty() {
-            parts.push(format!("unsets {}", effect.unset.join(", ")));
-        }
-        if parts.is_empty() {
-            parts.push("no variables".into());
-        }
-        notes.push(format!("{shown}: {}", parts.join("; ")));
+    if let Some(file) = legacy_env_file(dir) {
+        return Err(format!(
+            "{} is no longer read. Choose the cloud account with Cloud Settings… (right-click the folder), then delete the file.",
+            file.display()
+        ));
     }
+    let resolved = app.state::<CloudSettings>().resolve(dir);
+    let notes = cloud::apply(&resolved, &mut env);
     Ok(ResolvedEnv { vars: env, notes })
 }
 
-fn emit_line<R: Runtime>(app: &AppHandle<R>, run_id: u64, stream: &'static str, line: impl Into<String>) {
-    let _ = app.emit("tofu://output", OutputEvent { run_id, stream, line: line.into() });
+/// Where a run's events go: the window that started it.
+struct Sink<R: Runtime> {
+    app: AppHandle<R>,
+    window: String,
+    run_id: u64,
+}
+
+impl<R: Runtime> Clone for Sink<R> {
+    fn clone(&self) -> Self {
+        Sink { app: self.app.clone(), window: self.window.clone(), run_id: self.run_id }
+    }
+}
+
+impl<R: Runtime> Sink<R> {
+    fn new(webview: &Webview<R>, run_id: u64) -> Self {
+        Sink { app: webview.app_handle().clone(), window: webview.label().to_string(), run_id }
+    }
+
+    fn line(&self, stream: &'static str, line: impl Into<String>) {
+        let ev = OutputEvent { run_id: self.run_id, stream, line: line.into() };
+        let _ = self.app.emit_to(self.window.as_str(), "tofu://output", ev);
+    }
+
+    fn exit(&self, ev: ExitEvent) {
+        let _ = self.app.emit_to(self.window.as_str(), "tofu://exit", ev);
+    }
 }
 
 fn pump<R: Runtime, T: AsyncRead + Unpin + Send + 'static>(
-    app: AppHandle<R>,
-    run_id: u64,
+    sink: Sink<R>,
     stream: &'static str,
     reader: T,
 ) -> tauri::async_runtime::JoinHandle<()> {
@@ -238,7 +246,7 @@ fn pump<R: Runtime, T: AsyncRead + Unpin + Send + 'static>(
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
-                    emit_line(&app, run_id, stream, line);
+                    sink.line(stream, line);
                 }
             }
         }
@@ -249,14 +257,13 @@ fn next_id(runs: &Runs) -> u64 {
     runs.next_id.fetch_add(1, Ordering::Relaxed) + 1
 }
 
-fn interrupted<R: Runtime>(app: &AppHandle<R>, run_id: u64) -> bool {
-    app.state::<Runs>().active.lock().unwrap().get(&run_id).is_some_and(|r| r.interrupted)
+fn interrupted<R: Runtime>(sink: &Sink<R>) -> bool {
+    sink.app.state::<Runs>().active.lock().unwrap().get(&sink.run_id).is_some_and(|r| r.interrupted)
 }
 
 /// Run one step to completion, wiring it up for cancellation.
 async fn run_step<R: Runtime>(
-    app: &AppHandle<R>,
-    run_id: u64,
+    sink: &Sink<R>,
     bin: &Path,
     dir: &Path,
     env: &EnvMap,
@@ -265,7 +272,7 @@ async fn run_step<R: Runtime>(
     let mut child = Command::new(bin)
         .args(&step.args)
         .current_dir(dir)
-        // `env` is the complete environment, so `unset` in .gestalt.env works.
+        // `env` is the complete environment, so variables cloud settings removed stay removed.
         .env_clear()
         .envs(env)
         .env("TF_IN_AUTOMATION", "1")
@@ -277,13 +284,13 @@ async fn run_step<R: Runtime>(
         .map_err(|e| format!("Failed to start tofu: {e}"))?;
 
     let (kill_tx, kill_rx) = oneshot::channel();
-    if let Some(run) = app.state::<Runs>().active.lock().unwrap().get_mut(&run_id) {
+    if let Some(run) = sink.app.state::<Runs>().active.lock().unwrap().get_mut(&sink.run_id) {
         run.pid = child.id();
         run.kill = Some(kill_tx);
     }
 
-    let out = pump(app.clone(), run_id, "stdout", child.stdout.take().unwrap());
-    let err = pump(app.clone(), run_id, "stderr", child.stderr.take().unwrap());
+    let out = pump(sink.clone(), "stdout", child.stdout.take().unwrap());
+    let err = pump(sink.clone(), "stderr", child.stderr.take().unwrap());
     let status = tokio::select! {
         s = child.wait() => s,
         _ = kill_rx => {
@@ -314,7 +321,8 @@ impl Outcome {
     }
 }
 
-async fn execute_steps<R: Runtime>(app: &AppHandle<R>, run_id: u64, dir: &Path, kind: &RunKind, main: Step) -> Outcome {
+async fn execute_steps<R: Runtime>(sink: &Sink<R>, dir: &Path, kind: &RunKind, main: Step) -> Outcome {
+    let (app, run_id) = (&sink.app, sink.run_id);
     {
         let runs = app.state::<Runs>();
         let mut active = runs.active.lock().unwrap();
@@ -322,7 +330,8 @@ async fn execute_steps<R: Runtime>(app: &AppHandle<R>, run_id: u64, dir: &Path, 
         if active.values().any(|r| r.dir == dir) {
             return Outcome::failed(format!("A tofu command is already running in {}", dir.display()));
         }
-        active.insert(run_id, ActiveRun { dir: dir.to_path_buf(), pid: None, interrupted: false, kill: None });
+        let window = sink.window.clone();
+        active.insert(run_id, ActiveRun { dir: dir.to_path_buf(), window, pid: None, interrupted: false, kill: None });
     }
 
     let env = match effective_env(app, dir).await {
@@ -330,7 +339,7 @@ async fn execute_steps<R: Runtime>(app: &AppHandle<R>, run_id: u64, dir: &Path, 
         Err(e) => return Outcome::failed(e),
     };
     for note in &env.notes {
-        emit_line(app, run_id, "gestalt", format!("env: {note}"));
+        sink.line("gestalt", note);
     }
     let bin = match tofu_bin(&env.vars) {
         Ok(b) => b,
@@ -339,15 +348,15 @@ async fn execute_steps<R: Runtime>(app: &AppHandle<R>, run_id: u64, dir: &Path, 
 
     if kind.auto_init() {
         let init = Step::new(&["init", "-input=false"]);
-        let Some((code, error)) = run_echoed(app, run_id, &bin, dir, &env.vars, &init).await else {
+        let Some((code, error)) = run_echoed(sink, &bin, dir, &env.vars, &init).await else {
             return Outcome::cancelled();
         };
         if code != Some(0) || error.is_some() {
             return Outcome { code, error, main_ran: false };
         }
-        emit_line(app, run_id, "gestalt", "");
+        sink.line("gestalt", "");
     }
-    let Some((code, error)) = run_echoed(app, run_id, &bin, dir, &env.vars, &main).await else {
+    let Some((code, error)) = run_echoed(sink, &bin, dir, &env.vars, &main).await else {
         return Outcome::cancelled();
     };
     Outcome { code, error, main_ran: true }
@@ -356,28 +365,28 @@ async fn execute_steps<R: Runtime>(app: &AppHandle<R>, run_id: u64, dir: &Path, 
 /// Echo and run one step: its exit code, or why it couldn't run. `None` if
 /// the run was cancelled before the step started.
 async fn run_echoed<R: Runtime>(
-    app: &AppHandle<R>,
-    run_id: u64,
+    sink: &Sink<R>,
     bin: &Path,
     dir: &Path,
     env: &EnvMap,
     step: &Step,
 ) -> Option<(Option<i32>, Option<String>)> {
-    if interrupted(app, run_id) {
+    if interrupted(sink) {
         return None;
     }
-    emit_line(app, run_id, "gestalt", format!("$ tofu {}", step.shown.join(" ")));
-    Some(match run_step(app, run_id, bin, dir, env, step).await {
+    sink.line("gestalt", format!("$ tofu {}", step.shown.join(" ")));
+    Some(match run_step(sink, bin, dir, env, step).await {
         Ok(code) => (code, None),
         Err(e) => (None, Some(e)),
     })
 }
 
 /// Run `main` (after an init, except for applies) in `dir`, then report the exit.
-async fn execute<R: Runtime>(app: AppHandle<R>, run_id: u64, dir: PathBuf, kind: RunKind, main: Step) {
-    let outcome = execute_steps(&app, run_id, &dir, &kind, main).await;
+async fn execute<R: Runtime>(sink: Sink<R>, dir: PathBuf, kind: RunKind, main: Step) {
+    let outcome = execute_steps(&sink, &dir, &kind, main).await;
 
-    let runs = app.state::<Runs>();
+    let run_id = sink.run_id;
+    let runs = sink.app.state::<Runs>();
     let cancelled = runs.active.lock().unwrap().remove(&run_id).is_some_and(|r| r.interrupted);
     let Outcome { code, error, main_ran } = outcome;
     let ok = !cancelled && error.is_none();
@@ -387,7 +396,7 @@ async fn execute<R: Runtime>(app: AppHandle<R>, run_id: u64, dir: PathBuf, kind:
         RunKind::Plan { file } => {
             let has_changes = ok && main_ran && code == Some(2);
             if has_changes {
-                runs.plans.lock().unwrap().insert(run_id, SavedPlan { dir, file });
+                runs.plans.lock().unwrap().insert(run_id, SavedPlan { dir, window: sink.window.clone(), file });
             } else {
                 let _ = std::fs::remove_file(file);
             }
@@ -406,10 +415,7 @@ async fn execute<R: Runtime>(app: AppHandle<R>, run_id: u64, dir: PathBuf, kind:
         RunKind::Import => (main_ran && code == Some(0), None),
     };
 
-    let _ = app.emit(
-        "tofu://exit",
-        ExitEvent { run_id, code, success: success && ok, cancelled, has_changes, error, started: main_ran },
-    );
+    sink.exit(ExitEvent { run_id, code, success: success && ok, cancelled, has_changes, error, started: main_ran });
 }
 
 fn require_dir(dir: &str) -> Result<PathBuf, String> {
@@ -418,36 +424,34 @@ fn require_dir(dir: &str) -> Result<PathBuf, String> {
 }
 
 /// Report a run that couldn't even be set up, in its output pane.
-fn fail_run<R: Runtime>(app: &AppHandle<R>, run_id: u64, error: String) {
-    let _ = app.emit(
-        "tofu://exit",
-        ExitEvent {
-            run_id,
-            code: None,
-            success: false,
-            cancelled: false,
-            has_changes: None,
-            error: Some(error),
-            started: false,
-        },
-    );
+fn fail_run<R: Runtime>(sink: &Sink<R>, error: String) {
+    sink.exit(ExitEvent {
+        run_id: sink.run_id,
+        code: None,
+        success: false,
+        cancelled: false,
+        has_changes: None,
+        error: Some(error),
+        started: false,
+    });
 }
 
 /// `tofu plan` in `dir`, saving the plan for a later apply. Returns the run id;
 /// progress and any failure arrive as events.
 #[tauri::command]
-pub fn run_plan<R: Runtime>(app: AppHandle<R>, runs: State<'_, Runs>, dir: String) -> u64 {
+pub fn run_plan<R: Runtime>(webview: Webview<R>, runs: State<'_, Runs>, dir: String) -> u64 {
     let run_id = next_id(&runs);
-    let setup = require_dir(&dir).and_then(|dir| Ok((dir, plans_dir(&app)?.join(format!("{run_id}.tfplan")))));
+    let sink = Sink::new(&webview, run_id);
+    let setup = require_dir(&dir).and_then(|dir| Ok((dir, plans_dir(&sink.app)?.join(format!("{run_id}.tfplan")))));
     match setup {
         Ok((dir, file)) => {
             let mut out = OsString::from("-out=");
             out.push(&file);
             let step =
                 Step::new(&["plan", "-input=false", "-detailed-exitcode"]).arg(out, "-out=<saved plan>");
-            tauri::async_runtime::spawn(execute(app, run_id, dir, RunKind::Plan { file }, step));
+            tauri::async_runtime::spawn(execute(sink, dir, RunKind::Plan { file }, step));
         }
-        Err(e) => fail_run(&app, run_id, e),
+        Err(e) => fail_run(&sink, e),
     }
     run_id
 }
@@ -455,19 +459,20 @@ pub fn run_plan<R: Runtime>(app: AppHandle<R>, runs: State<'_, Runs>, dir: Strin
 /// Apply the saved plan produced by run `plan_run_id`, continuing that run:
 /// output and the exit event arrive under `plan_run_id`, in the same pane.
 #[tauri::command]
-pub fn apply_plan<R: Runtime>(app: AppHandle<R>, runs: State<'_, Runs>, plan_run_id: u64) {
+pub fn apply_plan<R: Runtime>(webview: Webview<R>, runs: State<'_, Runs>, plan_run_id: u64) {
+    let sink = Sink::new(&webview, plan_run_id);
     // Take the plan out now so it can't be applied twice.
     match runs.plans.lock().unwrap().remove(&plan_run_id) {
         Some(plan) => {
-            emit_line(&app, plan_run_id, "gestalt", "");
-            emit_line(&app, plan_run_id, "gestalt", "Applying the reviewed plan.");
+            sink.line("gestalt", "");
+            sink.line("gestalt", "Applying the reviewed plan.");
             let step =
                 Step::new(&["apply", "-input=false"]).arg(plan.file.clone(), "<saved plan from above>");
             let dir = plan.dir.clone();
             let kind = RunKind::Apply { plan };
-            tauri::async_runtime::spawn(execute(app, plan_run_id, dir, kind, step));
+            tauri::async_runtime::spawn(execute(sink, dir, kind, step));
         }
-        None => fail_run(&app, plan_run_id, "That plan is no longer available. Run a new plan.".into()),
+        None => fail_run(&sink, "That plan is no longer available. Run a new plan.".into()),
     }
 }
 
@@ -544,13 +549,14 @@ fn import_step(req: &ImportRequest) -> Result<Step, String> {
 
 /// `tofu import` in `dir`. Returns the run id; progress arrives as events.
 #[tauri::command]
-pub fn run_import<R: Runtime>(app: AppHandle<R>, runs: State<'_, Runs>, dir: String, request: ImportRequest) -> u64 {
+pub fn run_import<R: Runtime>(webview: Webview<R>, runs: State<'_, Runs>, dir: String, request: ImportRequest) -> u64 {
     let run_id = next_id(&runs);
+    let sink = Sink::new(&webview, run_id);
     match require_dir(&dir).and_then(|dir| Ok((dir, import_step(&request)?))) {
         Ok((dir, step)) => {
-            tauri::async_runtime::spawn(execute(app, run_id, dir, RunKind::Import, step));
+            tauri::async_runtime::spawn(execute(sink, dir, RunKind::Import, step));
         }
-        Err(e) => fail_run(&app, run_id, e),
+        Err(e) => fail_run(&sink, e),
     }
     run_id
 }
@@ -559,7 +565,7 @@ pub fn run_import<R: Runtime>(app: AppHandle<R>, runs: State<'_, Runs>, dir: Str
 #[tauri::command]
 pub async fn module_info<R: Runtime>(app: AppHandle<R>, dir: String) -> Result<ModuleInfo, String> {
     let dir = require_dir(&dir)?;
-    // A broken .gestalt.env shouldn't block the form; it'll be reported on run.
+    // A leftover .gestalt.env shouldn't block the form; it'll be reported on run.
     let env = effective_env(&app, &dir).await.map(|e| e.vars).unwrap_or_default();
     module_info::read(&dir, &env)
 }
@@ -577,8 +583,11 @@ pub fn discard_plan(runs: State<'_, Runs>, plan_run_id: u64) {
 #[tauri::command]
 pub fn cancel_tofu(runs: State<'_, Runs>, run_id: u64) -> Result<(), String> {
     let mut active = runs.active.lock().unwrap();
-    let run = active.get_mut(&run_id).ok_or("Run is not active")?;
+    interrupt(active.get_mut(&run_id).ok_or("Run is not active")?);
+    Ok(())
+}
 
+fn interrupt(run: &mut ActiveRun) {
     #[cfg(unix)]
     if !run.interrupted
         && let Some(pid) = run.pid
@@ -586,14 +595,27 @@ pub fn cancel_tofu(runs: State<'_, Runs>, run_id: u64) -> Result<(), String> {
         run.interrupted = true;
         // SAFETY: plain signal send to a child pid we spawned.
         unsafe { libc::kill(pid as i32, libc::SIGINT) };
-        return Ok(());
+        return;
     }
 
     run.interrupted = true;
     if let Some(kill) = run.kill.take() {
         let _ = kill.send(());
     }
-    Ok(())
+}
+
+/// A window closed: stop its runs, as Cancel does, and drop its saved plans.
+pub fn window_closed(runs: &Runs, window: &str) {
+    for run in runs.active.lock().unwrap().values_mut().filter(|r| r.window == window) {
+        interrupt(run);
+    }
+    runs.plans.lock().unwrap().retain(|_, plan| {
+        let keep = plan.window != window;
+        if !keep {
+            let _ = std::fs::remove_file(&plan.file);
+        }
+        keep
+    });
 }
 
 #[tauri::command]
@@ -673,6 +695,7 @@ mod tests {
 mod run_tests {
     use super::*;
     use crate::shell_env::testing::{fake_shell, ipc, script, temp_dir, webview};
+    use crate::cloud::Settings;
     use serde_json::{Value, json};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -703,6 +726,8 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
 
     struct Fx {
         app: tauri::App<MockRuntime>,
+        /// The window runs are started from; their events go only there.
+        view: tauri::WebviewWindow<MockRuntime>,
         /// Holds the fake tofu and shell; usable as a workspace root.
         base: PathBuf,
         /// The module folder runs happen in.
@@ -732,22 +757,24 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
         let app = tauri::test::mock_builder()
             .manage(Runs::default())
             .manage(shell)
-            .manage(Workspace::default())
+            .manage(CloudSettings::load(base.join("cloud.json")))
             .build(context)
             .unwrap();
+        let view = webview(&app);
         let (tx, events) = mpsc::channel();
         for name in ["tofu://output", "tofu://exit"] {
             let tx = tx.clone();
-            app.listen_any(name, move |e| {
+            // Only what's sent to the run's own window.
+            view.listen(name, move |e| {
                 let _ = tx.send((name, serde_json::from_str(e.payload()).unwrap()));
             });
         }
-        Fx { app, base, dir, events }
+        Fx { app, view, base, dir, events }
     }
 
     impl Fx {
-        fn handle(&self) -> AppHandle<MockRuntime> {
-            self.app.handle().clone()
+        fn handle(&self) -> Webview<MockRuntime> {
+            self.view.as_ref().clone()
         }
 
         fn dir_arg(&self) -> String {
@@ -758,8 +785,9 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
             self.app.state()
         }
 
-        fn set_root(&self, root: Option<&Path>) {
-            *self.app.state::<Workspace>().root.lock().unwrap() = root.map(Path::to_path_buf);
+        fn set_cloud(&self, dir: &Path, values: &[(&str, &str)]) {
+            let values: Settings = values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            self.app.state::<CloudSettings>().set(dir, values).unwrap();
         }
 
         fn plan_file(&self, run_id: u64) -> PathBuf {
@@ -935,58 +963,62 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
     }
 
     #[test]
-    fn env_files_apply_and_are_noted() {
-        let fx = fixture("env-files", &["AWS_PROFILE=dev"]);
-        std::fs::write(fx.base.join(".gestalt.env"), "FOO=bar\nunset AWS_PROFILE\n").unwrap();
-        std::fs::write(fx.dir.join(".gestalt.env"), "# nothing yet\n").unwrap();
-        fx.set_root(Some(&fx.base));
+    fn cloud_settings_apply_and_are_noted() {
+        let fx = fixture("cloud", &["AWS_PROFILE=shell", "AWS_SESSION_TOKEN=t", "FOO=shell"]);
+        fx.set_cloud(&fx.base, &[("aws.profile", "dev"), ("aws.region", "us-east-1")]);
+        fx.set_cloud(&fx.dir, &[("aws.profile", "prd")]);
         let id = run_import(fx.handle(), fx.runs(), fx.dir_arg(), req(json!({"address": "a.b", "id": "x"})));
         let (lines, ev) = fx.wait_exit(id);
+        let (base, dir) = (fx.base.display(), fx.dir.display());
         assert_eq!(
             gestalt(&lines)[..2],
-            ["env: .gestalt.env: sets FOO; unsets AWS_PROFILE", "env: mod/.gestalt.env: no variables"]
+            [
+                format!("cloud: AWS profile prd (from {dir}; sets AWS_PROFILE; removes AWS_SESSION_TOKEN)"),
+                format!("cloud: AWS region us-east-1 (from {base}; sets AWS_REGION, AWS_DEFAULT_REGION)"),
+            ]
         );
-        assert!(lines.iter().any(|l| l.starts_with("stdout: init") && l.contains(" foo=bar ")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("stdout: init") && l.contains(" foo=shell ")), "{lines:?}");
         assert_eq!(ev["success"], true);
     }
 
     #[test]
-    fn env_file_errors_fail_the_run() {
-        use std::os::unix::fs::PermissionsExt;
-        let fx = fixture("env-errors", &[]);
-        fx.set_root(Some(&fx.base));
-        let env_file = fx.dir.join(".gestalt.env");
-        std::fs::write(&env_file, "not an assignment\n").unwrap();
-        let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
-        assert_eq!(fx.wait_exit(id).1["error"], "mod/.gestalt.env: line 1: expected KEY=value");
-
-        // Unreadable; with no root the full path is shown.
-        std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o000)).unwrap();
-        fx.set_root(None);
+    fn leftover_env_files_fail_the_run() {
+        let fx = fixture("legacy-env", &[]);
+        let file = fx.base.join(".gestalt.env");
+        std::fs::write(&file, "AWS_PROFILE=dev\n").unwrap();
         let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
         let ev = fx.wait_exit(id).1;
-        std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let error = ev["error"].as_str().unwrap();
-        assert!(error.starts_with(&format!("{}: ", env_file.display())), "{error}");
-        assert_eq!(ev["started"], false);
+        let msg = format!(
+            "{} is no longer read. Choose the cloud account with Cloud Settings… (right-click the folder), then delete the file.",
+            file.display()
+        );
+        assert_eq!((&ev["error"], &ev["started"], &ev["success"]), (&json!(msg), &json!(false), &json!(false)));
     }
 
+    /// Events for a run reach only the window that started it.
     #[test]
-    fn a_missing_root_still_runs() {
-        let fx = fixture("missing-root", &[]);
-        std::fs::write(fx.dir.join(".gestalt.env"), "FOO=here\n").unwrap();
-        fx.set_root(Some(&fx.base.join("gone")));
+    fn events_go_to_the_starting_window() {
+        let fx = fixture("windows", &[]);
+        let other = tauri::WebviewWindowBuilder::new(&fx.app, "other", Default::default()).build().unwrap();
+        let (tx, rx) = mpsc::channel::<()>();
+        other.listen("tofu://exit", move |_| {
+            let _ = tx.send(());
+        });
+        // The listener hears what is sent to its window...
+        fx.app.emit_to("other", "tofu://exit", ()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
+        // ...but not another window's run.
         let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
-        let (lines, ev) = fx.wait_exit(id);
-        let note = format!("env: {}: sets FOO", fx.dir.join(".gestalt.env").display());
-        assert_eq!(gestalt(&lines)[0], note);
-        assert_eq!(ev["success"], true);
+        assert_eq!(fx.wait_exit(id).1["success"], true);
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
     #[test]
     fn reports_tofu_that_is_missing_or_will_not_start() {
-        let fx = fixture("no-tofu", &[&format!("PATH={}", temp_dir("tofu-empty-path").display())]);
-        std::fs::write(fx.dir.join(".gestalt.env"), "unset GESTALT_TOFU_BIN\n").unwrap();
+        let empty = temp_dir("tofu-empty-path");
+        let shell = ShellEnv::preloaded(EnvMap::from([("PATH".into(), empty.into())]));
+        let base = temp_dir("tofu-no-tofu");
+        let fx = fixture_with(base.clone(), shell, base.join("app"));
         let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
         let missing = "Could not find `tofu` on PATH. Set GESTALT_TOFU_BIN to its location.";
         assert_eq!(fx.wait_exit(id).1["error"], missing);
@@ -1001,7 +1033,7 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
     #[test]
     fn one_run_per_folder() {
         let fx = fixture("busy", &[]);
-        let busy = ActiveRun { dir: fx.dir.clone(), pid: None, interrupted: false, kill: None };
+        let busy = ActiveRun { dir: fx.dir.clone(), window: "main".into(), pid: None, interrupted: false, kill: None };
         fx.runs().active.lock().unwrap().insert(999, busy);
         assert_eq!(fx.runs().active_dirs(), std::slice::from_ref(&fx.dir));
         let msg = format!("A tofu command is already running in {}", fx.dir.display());
@@ -1013,7 +1045,8 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
         // An apply that never started keeps its plan.
         let file = fx.base.join("saved.tfplan");
         std::fs::write(&file, "").unwrap();
-        fx.runs().plans.lock().unwrap().insert(500, SavedPlan { dir: fx.dir.clone(), file: file.clone() });
+        let plan = SavedPlan { dir: fx.dir.clone(), window: "main".into(), file: file.clone() };
+        fx.runs().plans.lock().unwrap().insert(500, plan);
         apply_plan(fx.handle(), fx.runs(), 500);
         let (lines, ev) = fx.wait_exit(500);
         assert_eq!(gestalt(&lines), ["", "Applying the reviewed plan."]);
@@ -1056,6 +1089,30 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
     }
 
     #[test]
+    fn closing_a_window_cancels_its_runs_and_drops_its_plans() {
+        let fx = fixture("window-closed", &["FAKE_plan=graceful"]);
+        let saved = |n: u64, window: &str| {
+            let file = fx.base.join(format!("{n}.tfplan"));
+            std::fs::write(&file, "").unwrap();
+            fx.runs().plans.lock().unwrap().insert(n, SavedPlan { dir: fx.dir.clone(), window: window.into(), file: file.clone() });
+            file
+        };
+        let (mine, theirs) = (saved(800, "main"), saved(801, "other"));
+        let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
+        fx.wait_running(id);
+
+        window_closed(&fx.runs(), "other");
+        assert!(fx.has_pid(id) && !fx.runs().active.lock().unwrap()[&id].interrupted);
+        assert!(!theirs.exists() && mine.exists());
+
+        window_closed(&fx.runs(), "main");
+        let ev = fx.wait_exit(id).1;
+        assert_eq!((&ev["cancelled"], &ev["code"]), (&json!(true), &json!(130)));
+        assert!(!mine.exists());
+        assert!(fx.runs().plans.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn cancel_during_init_skips_the_command() {
         let fx = fixture("cancel-init", &["FAKE_init=finish"]);
         let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
@@ -1074,8 +1131,8 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
     fn cancel_before_anything_ran() {
         let fx = fixture("cancel-early", &[]);
         // Hold the run up while it resolves its environment.
-        let workspace = fx.app.state::<Workspace>();
-        let guard = workspace.root.lock().unwrap();
+        let settings = fx.app.state::<CloudSettings>();
+        let guard = settings.store.lock().unwrap();
         let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
         let deadline = Instant::now() + Duration::from_secs(20);
         while !fx.runs().active.lock().unwrap().contains_key(&id) {
@@ -1093,15 +1150,15 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
     fn module_info_reads_the_folder() {
         let fx = fixture("module-info", &[]);
         let missing = fx.base.join("missing");
-        let err = block_on(module_info(fx.handle(), missing.to_string_lossy().into())).unwrap_err();
+        let err = block_on(module_info(fx.app.handle().clone(), missing.to_string_lossy().into())).unwrap_err();
         assert_eq!(err, format!("{} is not a directory", missing.display()));
 
         std::fs::write(fx.dir.join("main.tf"), "variable \"region\" {}\n").unwrap();
-        let info = block_on(module_info(fx.handle(), fx.dir_arg())).unwrap();
+        let info = block_on(module_info(fx.app.handle().clone(), fx.dir_arg())).unwrap();
         assert_eq!(info.variables.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["region"]);
-        // A broken .gestalt.env doesn't block it.
+        // A leftover .gestalt.env doesn't block it.
         std::fs::write(fx.dir.join(".gestalt.env"), "broken\n").unwrap();
-        assert_eq!(block_on(module_info(fx.handle(), fx.dir_arg())).unwrap().variables.len(), 1);
+        assert_eq!(block_on(module_info(fx.app.handle().clone(), fx.dir_arg())).unwrap().variables.len(), 1);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 //! Read-only git queries for the Commits tab.
 
 use crate::shell_env::{EnvMap, ShellEnv};
-use crate::tofu::Workspace;
 use serde::Serialize;
 use crate::order::{self, ModuleRefs};
 use std::collections::{BTreeSet, HashMap};
@@ -370,30 +369,25 @@ async fn is_repo(dir: &Path, env: &EnvMap) -> bool {
     git(dir, env, &["rev-parse", "--is-inside-work-tree"]).await.is_ok_and(|s| s.trim() == "true")
 }
 
+// Each window passes the folder it has open as `root`.
+
 /// Whether the opened folder is inside a git work tree.
 #[tauri::command]
-pub async fn git_is_repo(workspace: State<'_, Workspace>, shell: State<'_, ShellEnv>) -> Result<bool, String> {
-    let Some(root) = workspace.root.lock().unwrap().clone() else { return Ok(false) };
+pub async fn git_is_repo(shell: State<'_, ShellEnv>, root: String) -> Result<bool, String> {
     let env = shell.get().await;
-    Ok(is_repo(&root, &env).await)
+    Ok(is_repo(Path::new(&root), &env).await)
 }
 
 /// Just the uncommitted-changes summary (for refreshing on file changes).
 #[tauri::command]
-pub async fn git_uncommitted(workspace: State<'_, Workspace>, shell: State<'_, ShellEnv>) -> Result<Uncommitted, String> {
-    let root = workspace.root.lock().unwrap().clone().ok_or("No folder is open.")?;
+pub async fn git_uncommitted(shell: State<'_, ShellEnv>, root: String) -> Result<Uncommitted, String> {
     let env = shell.get().await;
-    uncommitted_changes(&root, &env).await
+    uncommitted_changes(Path::new(&root), &env).await
 }
 
 #[tauri::command]
-pub async fn git_log(
-    workspace: State<'_, Workspace>,
-    shell: State<'_, ShellEnv>,
-    skip: usize,
-    limit: usize,
-) -> Result<GitLog, String> {
-    let root = workspace.root.lock().unwrap().clone().ok_or("No folder is open.")?;
+pub async fn git_log(shell: State<'_, ShellEnv>, root: String, skip: usize, limit: usize) -> Result<GitLog, String> {
+    let root = PathBuf::from(root);
     let env = shell.get().await;
     first_parent_log(&root, &env, skip, limit.clamp(1, 1000)).await.map_err(|e| {
         if e.contains("not a git repository") { format!("{} is not in a git repository.", root.display()) } else { e }
@@ -697,7 +691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commands_use_the_open_folder() {
+    async fn commands_use_the_given_folder() {
         use tauri::Manager;
         let r = Repo::new("git-commands");
         r.write("a/main.tf", "");
@@ -708,39 +702,31 @@ mod tests {
             .invoke_handler(tauri::generate_handler![git_is_repo, git_uncommitted, git_log])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(Workspace::default());
         app.manage(ShellEnv::default());
-        let set_root = |p: Option<PathBuf>| *app.state::<Workspace>().root.lock().unwrap() = p;
-
-        // Nothing open.
-        assert!(!git_is_repo(app.state(), app.state()).await.unwrap());
-        assert_eq!(git_uncommitted(app.state(), app.state()).await.unwrap_err(), "No folder is open.");
-        assert_eq!(git_log(app.state(), app.state(), 0, 10).await.unwrap_err(), "No folder is open.");
+        let root = |p: &Path| p.to_string_lossy().into_owned();
 
         // Through IPC, as the UI calls them.
-        set_root(Some(r.0.clone()));
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
-        let none = serde_json::json!({});
-        assert_eq!(ipc(&webview, "git_is_repo", none.clone()), Ok(true.into()));
-        let u = ipc(&webview, "git_uncommitted", none).unwrap();
+        let at = serde_json::json!({ "root": r.0 });
+        assert_eq!(ipc(&webview, "git_is_repo", at.clone()), Ok(true.into()));
+        let u = ipc(&webview, "git_uncommitted", at).unwrap();
         assert_eq!(u["modules"], serde_json::json!([{ "path": "b", "deleted": false, "dependsOn": [] }]));
         // The page size is clamped to at least one commit.
-        let log = ipc(&webview, "git_log", serde_json::json!({ "skip": 0, "limit": 0 })).unwrap();
+        let log = ipc(&webview, "git_log", serde_json::json!({ "root": r.0, "skip": 0, "limit": 0 })).unwrap();
         assert_eq!(log["commits"].as_array().unwrap().len(), 1);
         assert_eq!(log["commits"][0]["subject"], "one");
         assert_eq!(log["hasMore"], false);
 
         // Other git errors are passed through as-is.
-        set_root(Some(r.0.join(".git")));
-        let err = git_log(app.state(), app.state(), 0, 10).await.unwrap_err();
+        let err = git_log(app.state(), root(&r.0.join(".git")), 0, 10).await.unwrap_err();
         assert!(!err.contains("is not in a git repository"), "{err}");
 
         let dir = std::env::temp_dir().join(format!("gestalt-git-cmd-nogit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        set_root(Some(dir.clone()));
         assert!(!is_repo(&dir, &EnvMap::new()).await, "test needs the temp dir to be outside any git repo");
-        assert!(!git_is_repo(app.state(), app.state()).await.unwrap());
-        let err = git_log(app.state(), app.state(), 0, 10).await.unwrap_err();
+        assert!(!git_is_repo(app.state(), root(&dir)).await.unwrap());
+        assert!(git_uncommitted(app.state(), root(&dir)).await.is_err());
+        let err = git_log(app.state(), root(&dir), 0, 10).await.unwrap_err();
         assert_eq!(err, format!("{} is not in a git repository.", dir.display()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -754,22 +740,21 @@ mod tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
-        let args = serde_json::json!({ "skip": 0, "limit": 1 });
+        let args = serde_json::json!({ "root": "/", "skip": 0, "limit": 1 });
         let fails_with = |cmd: &str, args: &serde_json::Value, msg: &str| {
             let err = ipc(&webview, cmd, args.clone()).unwrap_err();
             assert!(err.as_str().unwrap().contains(msg), "{cmd}: {err}");
         };
-        // Neither state, then only the workspace.
-        for _ in 0..2 {
-            for cmd in ["git_is_repo", "git_uncommitted", "git_log"] {
-                fails_with(cmd, &args, "state not managed");
-            }
-            app.manage(Workspace::default());
+        for cmd in ["git_is_repo", "git_uncommitted", "git_log"] {
+            fails_with(cmd, &args, "state not managed");
         }
-        // Both states, but no paging arguments.
+        // State, but missing arguments.
         app.manage(ShellEnv::preloaded(EnvMap::new()));
-        fails_with("git_log", &serde_json::json!({ "limit": 1 }), "missing required key skip");
-        fails_with("git_log", &serde_json::json!({ "skip": 0 }), "missing required key limit");
+        for cmd in ["git_is_repo", "git_uncommitted", "git_log"] {
+            fails_with(cmd, &serde_json::json!({ "skip": 0, "limit": 1 }), "missing required key root");
+        }
+        fails_with("git_log", &serde_json::json!({ "root": "/", "limit": 1 }), "missing required key skip");
+        fails_with("git_log", &serde_json::json!({ "root": "/", "skip": 0 }), "missing required key limit");
     }
 
     /// Call a command through the IPC layer, as the UI does.

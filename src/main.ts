@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { newAnsiState, renderAnsi } from "./ansi";
+import { cloudBadges, cloudParts, cloudSummary, openCloudSettings, providerLogo, type CloudSetting } from "./cloudSettings";
 import { fileIcon, fileKind, icons } from "./icons";
-import { openEnvEditor } from "./envEditor";
 import { openImportDialog, type ImportRequest } from "./importDialog";
 import { initSystemColors } from "./systemColors";
 import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
@@ -20,6 +20,13 @@ import {
   type Run,
   type RunKind,
 } from "./runs";
+
+// Each window has its own folder and runs. Listen only for events sent to
+// this window (or to all windows), not those meant for another one.
+const appWindow = getCurrentWebviewWindow();
+const listen: typeof appWindow.listen = (event, handler) => appWindow.listen(event, handler);
+/** The window opened at launch; later ones come from `gestalt <folder>` or New Window. */
+const IS_LAUNCH_WINDOW = appWindow.label === "main";
 
 // ---- Run state ---------------------------------------------------------------
 
@@ -309,15 +316,50 @@ function closeRun(run: Run) {
 // ---- Folder tree -------------------------------------------------------------
 
 let currentRoot: string | null = null;
+/** Every folder with cloud settings of its own, for tree badges. */
+let cloudFolders: Record<string, Record<string, string>> = {};
 
-async function editEnv(dir: string) {
-  if (await openEnvEditor(dir)) await renderTree();
-}
+/** Saving sends `cloud://changed` to every window, which refreshes what shows settings. */
+const editCloud = (dir: string) => void openCloudSettings(dir, relName(dir), relName);
 
-// Workspace > Clean All .terraform Caches… in the app menu.
+// Workspace menu items, sent to the window in front.
 listen("menu://clean-all", () => {
   if (currentRoot) void cleanCaches(currentRoot);
 });
+listen("menu://cloud-settings", () => {
+  if (currentRoot) editCloud(currentRoot);
+});
+listen("cloud://changed", () => {
+  if (!currentRoot) return;
+  void renderTree();
+  void refreshCloudStatus(currentRoot);
+});
+
+/** The toolbar button: cloud settings in effect for the open folder, `root`. */
+async function refreshCloudStatus(root: string) {
+  const btn = $<HTMLButtonElement>("cloud-status");
+  btn.hidden = false;
+  const settings = await invoke<CloudSetting[]>("cloud_effective", { dir: root }).catch((e) => {
+    console.error(e);
+    return [] as CloudSetting[];
+  });
+  if (root !== currentRoot) return;
+  const summary = cloudSummary(settings);
+  const parts = cloudParts(settings);
+  btn.querySelector<HTMLElement>(".icon")!.hidden = parts.length > 0;
+  $("cloud-status-text").replaceChildren(
+    ...(parts.length
+      ? parts.flatMap((p) => [providerLogo(p.id, p.title), p.text])
+      : ["No cloud account"]),
+  );
+  btn.classList.toggle("unset", !summary);
+  btn.title = summary
+    ? `tofu runs here use ${summary}.\nFolders below can override it. Click to change.`
+    : "No AWS profile, gcloud configuration or Azure subscription chosen for this folder. Click to choose one.";
+}
+$("cloud-status").onclick = () => {
+  if (currentRoot) editCloud(currentRoot);
+};
 
 /** Folder menu. tofu commands only for folders with a main.tf (isModule). */
 async function showContextMenu(dir: string, isModule: boolean) {
@@ -335,7 +377,7 @@ async function showContextMenu(dir: string, isModule: boolean) {
     items: [
       ...tofuItems,
       // Any folder: parent folders hold shared settings for the modules below.
-      await item("Edit .gestalt.env…", () => void editEnv(dir)),
+      await item("Cloud Settings…", () => editCloud(dir)),
       // Any folder: this folder and everything below it.
       await item("Clean .terraform Caches…", () => void cleanCaches(dir)),
     ],
@@ -377,10 +419,6 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   row.append(caret, icon, label);
 
   row.onclick = () => selectRow(row, entry.path);
-  if (kind === "env") {
-    row.title = "Double-click to edit";
-    row.ondblclick = () => void editEnv(parent.path);
-  }
   row.oncontextmenu = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -423,12 +461,8 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
     badge.textContent = "tf";
     row.append(badge);
   }
-  if (entry.hasEnvFile) {
-    const badge = document.createElement("span");
-    badge.className = "badge env";
-    badge.textContent = "env";
-    badge.title = ".gestalt.env in this folder applies here and to all subfolders";
-    row.append(badge);
+  for (const b of cloudBadges(cloudFolders[entry.path] ?? {})) {
+    row.append(providerLogo(b.id, `${b.title}\nApplies here and to all subfolders.`));
   }
 
   const children = document.createElement("ul");
@@ -490,8 +524,12 @@ async function renderTree() {
   const btn = $<HTMLButtonElement>("refresh-tree");
   btn.disabled = true;
   try {
-    // open_root also tells the backend where .gestalt.env lookup stops.
+    // open_root also tells the backend which folder to watch for this window.
     const entry = await invoke<DirEntry>("open_root", { path: currentRoot });
+    cloudFolders = await invoke<typeof cloudFolders>("cloud_folders").catch((e) => {
+      console.error(e);
+      return {};
+    });
     const root = await buildNode(entry, 0);
     if (gen !== treeGeneration) return;
     $("tree").replaceChildren(root);
@@ -514,11 +552,13 @@ async function loadRoot(path: string) {
   }
   $("root-path").textContent = path;
   $("root-path").title = "";
+  appWindow.setTitle(`${baseName(path)} — Gestalt`).catch(console.error);
   expanded.clear();
   expanded.add(path); // start with the root expanded
   selectedPath = null;
   await renderTree();
-  void resetCommits();
+  void resetCommits(path);
+  void refreshCloudStatus(path);
   renderTabs();
 }
 
@@ -642,7 +682,25 @@ $("env-status").textContent = "loading env…";
 invoke<EnvStatus>("shell_env_status").then(renderEnvStatus).catch(console.error);
 refreshTofuVersion();
 
-/** Startup folder: command line / GESTALT_ROOT if set, else the last one opened. */
+// Closing a window cancels its runs: check first.
+appWindow
+  .onCloseRequested(async (ev) => {
+    const running = [...runs.values()].filter((r) => r.status === "running" && r.kind !== "clean").length;
+    if (!running) return;
+    const ok = await ask(`${running} tofu run${running > 1 ? "s are" : " is"} still running in this window. Cancel and close?`, {
+      title: "Close window",
+      kind: "warning",
+      okLabel: "Cancel runs and close",
+      cancelLabel: "Keep open",
+    });
+    if (!ok) ev.preventDefault();
+  })
+  .catch(console.error);
+
+/**
+ * Startup folder: the one this window was opened for (command line /
+ * GESTALT_ROOT for the launch window), else the last one opened.
+ */
 async function openInitialRoot() {
   const configured = await invoke<{ path: string; source: string } | null>("initial_root").catch((e) => {
     console.error(e);
@@ -655,7 +713,8 @@ async function openInitialRoot() {
   }
   let last: string | null = null;
   try {
-    last = localStorage.getItem(LAST_ROOT_KEY);
+    // Only the launch window: a new window without a folder starts empty.
+    if (IS_LAUNCH_WINDOW) last = localStorage.getItem(LAST_ROOT_KEY);
   } catch {
     /* storage unavailable */
   }
