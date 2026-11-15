@@ -55,11 +55,18 @@ function baseName(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 }
 
-function registerRun(run: Run) {
+/** Add a run's tab, or with `replaces`, put it in that finished run's tab. */
+function registerRun(run: Run, replaces?: number) {
   const pending = early.get(run.id);
   early.delete(run.id);
   if (pending) run.lines.push(...pending.lines);
-  runs.set(run.id, run);
+  if (replaces != null && runs.has(replaces)) {
+    const entries = [...runs].map(([id, r]): [number, Run] => (id === replaces ? [run.id, run] : [id, r]));
+    runs.clear();
+    for (const [id, r] of entries) runs.set(id, r);
+  } else {
+    runs.set(run.id, run);
+  }
   selectRun(run.id);
   if (pending?.exit) handleExit(run, pending.exit);
 }
@@ -69,7 +76,14 @@ function registerRun(run: Run) {
  * including failures to start, as output/exit events, so it all shows in the
  * run's pane. Only a failed invoke itself (shouldn't happen) is handled here.
  */
-async function startRun(dir: string, kind: RunKind, command: string, args: Record<string, unknown>, extra: Partial<Run> = {}) {
+async function startRun(
+  dir: string,
+  kind: RunKind,
+  command: string,
+  args: Record<string, unknown>,
+  extra: Partial<Run> = {},
+  replaces?: number,
+) {
   let id: number;
   try {
     id = await invoke<number>(command, args);
@@ -80,15 +94,24 @@ async function startRun(dir: string, kind: RunKind, command: string, args: Recor
       exit: { runId: id, code: null, success: false, cancelled: false, hasChanges: null, error: String(e), started: false },
     });
   }
-  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ansi: new Map(), ...extra });
+  registerRun({ id, dir, kind, status: "running", lines: [], planState: "none", ansi: new Map(), ...extra }, replaces);
 }
 
 /**
  * Plan in `dir`. With `applyWhenReady`, the run is an apply: init,
  * plan, confirm, then apply that saved plan, all in this one run's pane.
  */
-const startPlan = (dir: string, applyWhenReady = false) =>
-  startRun(dir, applyWhenReady ? "apply" : "plan", "run_plan", { dir }, { applyWhenReady });
+const startPlan = (dir: string, applyWhenReady = false, replaces?: number) =>
+  startRun(dir, applyWhenReady ? "apply" : "plan", "run_plan", { dir }, { applyWhenReady }, replaces);
+
+/** A failed or cancelled plan/apply can be planned again in its own tab. */
+const canReplan = (run: Run) => (run.kind === "plan" || run.kind === "apply") && (run.status === "failed" || run.status === "cancelled");
+
+/** Plan again in a failed run's tab; an apply asks to apply again once planned. */
+function replan(run: Run) {
+  if (!canReplan(run)) return;
+  void startPlan(run.dir, run.kind === "apply", run.id);
+}
 
 async function startImport(dir: string) {
   const request: ImportRequest | null = await openImportDialog(dir, relName(dir));
@@ -248,6 +271,7 @@ function renderHeader() {
   const status = $("run-status");
   status.className = `status ${run.status}`;
   status.textContent = statusText(run);
+  $<HTMLButtonElement>("run-replan").hidden = !canReplan(run);
   $<HTMLButtonElement>("run-apply").hidden = run.planState !== "ready";
   $<HTMLButtonElement>("run-cancel").hidden = run.status !== "running" || run.kind === "clean";
 }
@@ -295,6 +319,11 @@ listen<ExitEvent>("tofu://exit", ({ payload }) => {
 $("run-apply").onclick = () => {
   const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
   if (run) void confirmAndApply(run);
+};
+
+$("run-replan").onclick = () => {
+  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
+  if (run) replan(run);
 };
 
 $("run-cancel").onclick = () => {

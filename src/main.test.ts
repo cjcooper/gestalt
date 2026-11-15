@@ -1165,6 +1165,86 @@ describe("runs", () => {
     expect(byId("run-title").textContent).toBe("tofu plan — /repo/b");
     expect(status()).toBe("running…");
   });
+
+  it("plans a failed or cancelled run again in its own tab", async () => {
+    await bootRepo();
+    byId("run-replan").click(); // nothing selected
+    handlers.run_plan = () => 1;
+    plan("/repo/a");
+    await flush();
+    expect(byId("run-replan").hidden).toBe(true);
+    handlers.run_plan = () => 2;
+    plan("/repo/b");
+    await flush();
+    tabs()[0].click();
+    exitEv(1, { success: false, code: 1 });
+    expect(status()).toBe("failed (exit 1)");
+    expect(byId("run-replan").hidden).toBe(false);
+
+    handlers.run_plan = () => 3;
+    byId("run-replan").click();
+    await flush();
+    expect(invoked("run_plan")).toEqual([{ dir: "/repo/a" }, { dir: "/repo/b" }, { dir: "/repo/a" }]);
+    // Same slot, now running; the failed run's output is gone.
+    expect(tabLabels()).toEqual(["plan · a", "plan · b"]);
+    expect(selectedTab()).toBe(0);
+    expect(status()).toBe("running…");
+    expect(byId("run-replan").hidden).toBe(true);
+    expect(output().textContent).toBe("");
+
+    exitEv(3, { cancelled: true, success: false, code: 130 });
+    expect(byId("run-replan").hidden).toBe(false);
+    exitEv(3, { hasChanges: false });
+    expect(status()).toBe("no changes");
+    expect(byId("run-replan").hidden).toBe(true);
+    // A hidden button does nothing.
+    byId("run-replan").click();
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(3);
+  });
+
+  it("plans a failed apply again as an apply", async () => {
+    await bootRepo({ handlers: { apply_plan: () => undefined } });
+    applyPlan("/repo/app");
+    await flush();
+    exitEv(1, { success: false, code: 1 });
+    handlers.run_plan = () => 2;
+    byId("run-replan").click();
+    await flush();
+    expect(tabLabels()).toEqual(["apply · app"]);
+    out(2, PLAN_LINE);
+    m.ask.mockResolvedValueOnce(false);
+    exitEv(2, { hasChanges: true });
+    await flush();
+    expect(m.ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a new tab if the failed one closes while planning again", async () => {
+    await bootRepo();
+    plan("/repo/a");
+    await flush();
+    exitEv(1, { success: false, code: 1 });
+    handlers.run_plan = () => 2;
+    byId("run-replan").click();
+    closeButton(0).click();
+    await flush();
+    expect(tabLabels()).toEqual(["plan · a"]);
+    expect(status()).toBe("running…");
+  });
+
+  it("doesn't offer to plan a failed import again", async () => {
+    await bootRepo({ handlers: { run_import: () => 9 } });
+    row("envs").click();
+    await flush();
+    rightClick(row("prod"));
+    await flush();
+    m.openImportDialog.mockResolvedValueOnce({ address: "a.b", id: "x", vars: [] });
+    menuAction("Import…");
+    await flush();
+    exitEv(9, { success: false, code: 1 });
+    expect(status()).toBe("failed (exit 1)");
+    expect(byId("run-replan").hidden).toBe(true);
+  });
 });
 
 describe("applying a plan", () => {
