@@ -60,7 +60,7 @@ export async function mountFileEditor(root: HTMLElement, path: string, owner = "
     <div class="action-bar">
       <button type="button" class="icon-button" data-action="save" title="Save (⌘S)" aria-label="Save">${icons.save}</button>
       <span class="run-actions" hidden>
-        <button type="button" class="with-icon" data-action="plan">${icons.play}Plan</button>
+        <button type="button" class="folder-btn plan-btn" data-action="plan">${icons.play}Plan</button>
       </span>
       <span class="file-status"></span>
       <span class="spacer"></span>

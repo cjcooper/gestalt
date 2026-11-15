@@ -3,7 +3,7 @@ import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { newAnsiState, renderAnsi } from "./ansi";
-import { cloudBadges, cloudParts, cloudSummary, openCloudSettings, providerLogo, type CloudSetting } from "./cloudSettings";
+import { cloudBadges, cloudParts, cloudSummary, hasOverride, openCloudSettings, providerLogo, type CloudSetting, type OwnSettings } from "./cloudSettings";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openSettings } from "./settings";
 import { PLAN_EVENT, closeEditorWindows, closeFrontDialog, type PlanRequest } from "./windows";
@@ -318,8 +318,8 @@ function closeRun(run: Run) {
 // ---- Folder tree -------------------------------------------------------------
 
 let currentRoot: string | null = null;
-/** Every folder with cloud settings of its own, for tree badges. */
-let cloudFolders: Record<string, Record<string, string>> = {};
+/** Every folder with cloud settings of its own, as paths in this workspace, for tree badges. */
+let cloudFolders: Record<string, OwnSettings> = {};
 
 /** Saving sends `cloud://changed` to every window, which refreshes what shows settings. */
 const editCloud = (dir: string) => void openCloudSettings(dir, relName(dir), relName);
@@ -379,7 +379,7 @@ async function refreshCloudStatus(root: string) {
   );
   btn.classList.toggle("unset", !summary);
   btn.title = summary
-    ? `tofu runs here use ${summary}.\nFolders below can override it. Click to change.`
+    ? `tofu runs here use ${summary}${hasOverride(settings) ? " (partly overridden for this workspace only)" : ""}.\nFolders below can override it. Click to change.`
     : "No AWS profile, gcloud configuration or Azure subscription chosen for this folder. Click to choose one.";
 }
 $("cloud-status").onclick = () => {
@@ -532,7 +532,7 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
     badge.textContent = "tf";
     row.append(badge);
   }
-  for (const b of cloudBadges(cloudFolders[entry.path] ?? {})) {
+  for (const b of cloudBadges(cloudFolders[entry.path] ?? { shared: {}, workspace: {} })) {
     row.append(providerLogo(b.id, `${b.title}\nApplies here and to all subfolders.`));
   }
 
@@ -597,7 +597,7 @@ async function renderTree() {
   try {
     // open_root also tells the backend which folder to watch for this window.
     const entry = await invoke<DirEntry>("open_root", { path: currentRoot });
-    cloudFolders = await invoke<typeof cloudFolders>("cloud_folders").catch((e) => {
+    cloudFolders = await invoke<typeof cloudFolders>("cloud_folders", { root: currentRoot }).catch((e) => {
       console.error(e);
       return {};
     });

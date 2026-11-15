@@ -620,7 +620,7 @@ describe("folder tree", () => {
 
   it("marks folders that have cloud settings of their own", async () => {
     await bootRepo({
-      handlers: { cloud_folders: () => ({ "/repo/envs": { "aws.profile": "dev", "gcp.project": "p-1" } }) },
+      handlers: { cloud_folders: () => ({ "/repo/envs": { shared: { "aws.profile": "dev", "gcp.project": "p-1" }, workspace: {} } }) },
     });
     const logos = [...row("envs").querySelectorAll<HTMLElement>(".cloud-logo")];
     expect(logos.map((b) => b.className)).toEqual(["cloud-logo aws", "cloud-logo gcp"]);
@@ -1492,6 +1492,11 @@ describe("cloud settings", () => {
 
     statusButton().click();
     expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
+
+    handlers.cloud_effective = () => [{ ...prd[0], scope: "workspace" }];
+    emit("cloud://changed");
+    await flush();
+    expect(statusButton().title).toMatch(/^tofu runs here use AWS prd \(partly overridden for this workspace only\)\./);
   });
 
   it("says when no account is chosen, or settings can't be read", async () => {
@@ -1521,12 +1526,13 @@ describe("cloud settings", () => {
     byId("open-root").click();
     await flush();
     handlers.cloud_effective = () => prd;
-    handlers.cloud_folders = () => ({ "/repo/envs": { "aws.region": "eu-west-1" } });
+    handlers.cloud_folders = () => ({ "/repo/envs": { shared: {}, workspace: { "aws.region": "eu-west-1" } } });
     emit("cloud://changed");
     await flush();
     expect(invoked("open_root")).toHaveLength(2);
     expect(byId("cloud-status-text").textContent).toBe("prd · eu-west-1");
     expect(row("envs").querySelector(".cloud-logo")!.className).toBe("cloud-logo aws");
+    expect(invoked("cloud_folders").pop()).toEqual({ root: "/repo" });
   });
 
   it("ignores a slow answer for a folder that's no longer open", async () => {

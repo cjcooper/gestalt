@@ -787,7 +787,7 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
 
         fn set_cloud(&self, dir: &Path, values: &[(&str, &str)]) {
             let values: Settings = values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            self.app.state::<CloudSettings>().set(dir, values).unwrap();
+            self.app.state::<CloudSettings>().set(dir, cloud::Scope::Shared, values).unwrap();
         }
 
         fn plan_file(&self, run_id: u64) -> PathBuf {

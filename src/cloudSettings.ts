@@ -2,15 +2,29 @@
 // Azure subscription tofu uses there and in every folder below it. Choices
 // come from the providers' own CLI config; settings are kept by Gestalt, not
 // in the repo.
+//
+// In a git repository a folder's settings are shared by every checkout of
+// the repo (each worktree too), and one workspace can override them for
+// itself only, e.g. a worktree testing a change against a sandbox account.
 
 import { invoke } from "@tauri-apps/api/core";
 import { providerLogos, type ProviderId } from "./icons";
 
-/** A setting in effect, and the folder it was set on. */
+/** Shared by every checkout of the repository, or this workspace's override. */
+export type Scope = "shared" | "workspace";
+
+/** A setting in effect, the folder it was set on and which settings it's from. */
 export interface CloudSetting {
   key: string;
   value: string;
   source: string;
+  scope?: Scope;
+}
+
+/** A folder's own settings of each scope (cloud_folders). */
+export interface OwnSettings {
+  shared: Record<string, string>;
+  workspace: Record<string, string>;
 }
 
 interface Available {
@@ -22,7 +36,10 @@ interface Available {
 
 interface CloudContext {
   dir: string;
+  /** Not in a git repository: no workspace overrides. */
+  repo: { name: string; top: string } | null;
   own: Record<string, string>;
+  workspace: Record<string, string>;
   inherited: CloudSetting[];
   available: Available;
 }
@@ -135,16 +152,21 @@ export function providerLogo(id: ProviderId, title?: string): HTMLSpanElement {
   return span;
 }
 
-/** Providers a folder's own settings name, for its badges. */
-export function cloudBadges(own: Record<string, string>): { id: ProviderId; title: string }[] {
-  return PROVIDERS.filter((p) => p.fields.some((f) => own[f.key])).map((p) => ({
+/** Providers a folder's own settings name, for its badges; overrides win. */
+export function cloudBadges({ shared, workspace }: OwnSettings): { id: ProviderId; title: string }[] {
+  const value = (key: string) =>
+    workspace[key] ? `${workspace[key]} (this workspace only)` : shared[key];
+  return PROVIDERS.filter((p) => p.fields.some((f) => value(f.key))).map((p) => ({
     id: p.id,
     title: p.fields
-      .filter((f) => own[f.key])
-      .map((f) => `${p.title} ${f.label.toLowerCase()}: ${own[f.key]}`)
+      .filter((f) => value(f.key))
+      .map((f) => `${p.title} ${f.label.toLowerCase()}: ${value(f.key)}`)
       .join("\n"),
   }));
 }
+
+/** Whether any setting in effect is this workspace's override. */
+export const hasOverride = (settings: CloudSetting[]) => settings.some((s) => s.scope === "workspace");
 
 const h = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -197,25 +219,27 @@ export async function openCloudSettings(dir: string, shown: string, rel: (path: 
     return false;
   }
 
+  // Each scope's values, kept while switching between them.
+  const values: Record<Scope, Record<string, string>> = { shared: { ...ctx.own }, workspace: { ...ctx.workspace } };
+  let scope: Scope = "shared";
   const inputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
+  /** What a blank field means in the scope being edited. */
+  const fallback = (key: string) => {
+    const shared = values.shared[key];
+    if (scope === "workspace" && shared) return `Shared: ${shared}`;
+    const inherited = ctx.inherited.find((s) => s.key === key);
+    return inherited && `Inherit: ${inherited.value} (from ${rel(inherited.source)})`;
+  };
   const control = (f: (typeof FIELDS)[number]) => {
-    const own = ctx.own[f.key] ?? "";
-    const inherited = ctx.inherited.find((s) => s.key === f.key);
-    const from = inherited && `${inherited.value} (from ${rel(inherited.source)})`;
     let input: HTMLInputElement | HTMLSelectElement;
     if (f.choices) {
       const choices = f.choices(ctx.available);
-      if (own && !choices.some((c) => c.value === own)) choices.unshift({ value: own, text: `${own} — not found` });
-      input = h(
-        "select",
-        {},
-        h("option", { value: "" }, from ? `Inherit: ${from}` : "Not set"),
-        ...choices.map((c) => h("option", { value: c.value }, c.text)),
-      );
+      const own = [values.shared[f.key], values.workspace[f.key]].filter((v): v is string => !!v);
+      for (const v of new Set(own)) if (!choices.some((c) => c.value === v)) choices.unshift({ value: v, text: `${v} — not found` });
+      input = h("select", {}, h("option", { value: "" }), ...choices.map((c) => h("option", { value: c.value }, c.text)));
     } else {
-      input = h("input", { placeholder: from ? `Inherit: ${from}` : f.placeholder, autocomplete: "off", spellcheck: false });
+      input = h("input", { autocomplete: "off", spellcheck: false });
     }
-    input.value = own;
     input.id = `cloud-${f.key.replace(".", "-")}`;
     inputs.set(f.key, input);
     return h(
@@ -226,13 +250,46 @@ export async function openCloudSettings(dir: string, shown: string, rel: (path: 
       h("div", { class: "hint" }, f.hint),
     );
   };
+  /** Show `scope`'s values, and what blank means there. */
+  const fill = () => {
+    for (const f of FIELDS) {
+      const input = inputs.get(f.key)!;
+      const blank = fallback(f.key);
+      if (input instanceof HTMLSelectElement) input.options[0].textContent = blank ?? "Not set";
+      // Every free-text field has a placeholder.
+      else input.placeholder = (blank ?? f.placeholder)!;
+      input.value = values[scope][f.key] ?? "";
+    }
+    hint.textContent =
+      scope === "shared"
+        ? `Applies to tofu runs in this folder and every folder below it${ctx.repo ? `, in every checkout of ${ctx.repo.name}` : ""}. Fields left blank use the nearest folder above that sets them. Saved on this computer, not in the repo.`
+        : `Only for the workspace at ${ctx.repo!.top}, e.g. to test a change against another account. A field set here wins over the shared setting for this folder; blank ones use it.`;
+  };
+  const keep = () => {
+    for (const [k, input] of inputs) values[scope][k] = input.value.trim();
+  };
+
+  const hint = h("p", { class: "hint" });
+  const scopes = ctx.repo
+    ? (
+        [
+          ["shared", `All checkouts of ${ctx.repo.name}`],
+          ["workspace", "This workspace only"],
+        ] as const
+      ).map(([value, text]) => {
+        const radio = h("input", { type: "radio", name: "cloud-scope", value, checked: value === scope });
+        radio.onchange = () => {
+          keep();
+          scope = value;
+          fill();
+        };
+        return h("label", { class: "scope-option" }, radio, text);
+      })
+    : [];
 
   body.replaceChildren(
-    h(
-      "p",
-      { class: "hint" },
-      "Applies to tofu runs in this folder and every folder below it. Fields left to inherit use the nearest folder above that sets them. Saved on this computer, not in the repo.",
-    ),
+    ...(scopes.length ? [h("div", { class: "scope-picker", role: "radiogroup", ariaLabel: "Save for" }, ...scopes)] : []),
+    hint,
     ...(ctx.available.errors.length
       ? [h("div", { class: "notice error" }, "Some cloud config couldn't be read:\n" + ctx.available.errors.join("\n"))]
       : []),
@@ -241,6 +298,7 @@ export async function openCloudSettings(dir: string, shown: string, rel: (path: 
     ),
     error,
   );
+  fill();
   save.disabled = false;
   clear.disabled = false;
   inputs.get("aws.profile")!.focus();
@@ -252,10 +310,12 @@ export async function openCloudSettings(dir: string, shown: string, rel: (path: 
   let saved = false;
   form.onsubmit = async (ev) => {
     ev.preventDefault();
-    const values = Object.fromEntries([...inputs].map(([k, input]) => [k, input.value.trim()]));
+    keep();
     save.disabled = true;
     try {
-      await invoke("cloud_set", { dir: ctx.dir, values });
+      for (const s of ctx.repo ? (["shared", "workspace"] as const) : (["shared"] as const)) {
+        await invoke("cloud_set", { dir: ctx.dir, values: Object.fromEntries(FIELDS.map((f) => [f.key, values[s][f.key] ?? ""])), scope: s });
+      }
       saved = true;
       dialog.close();
     } catch (e) {

@@ -194,10 +194,18 @@ configurations` and `az login`. Each field is inherited from the nearest
 folder above that sets it, and folders with settings of their own are marked
 in the tree.
 
+Inside a git repository, settings belong to the repository, not one copy of
+it: every checkout shares them, so a worktree opened to try a change before
+it's merged plans and applies each folder with the same accounts as the main
+checkout. To use other accounts in one checkout only (say, a sandbox for a
+test worktree), choose **This workspace only** in the dialog: a field set
+there wins over the shared setting for that folder, in that checkout alone.
+
 Settings are kept per computer in Gestalt's config folder
 (`~/Library/Application Support/com.it-problems.gestalt/cloud.json` on macOS),
-keyed by folder path, never in the repo, so everyone can use their own profile
-names.
+by repository and path within it (by folder path outside a repository), never
+in the repo, so everyone can use their own profile names. Settings saved by
+older versions, by folder path, move to their repository on first launch.
 
 tofu runs with your login shell's environment plus the folder's cloud
 settings, which set:
