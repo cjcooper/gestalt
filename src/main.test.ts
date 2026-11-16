@@ -1247,6 +1247,186 @@ describe("runs", () => {
   });
 });
 
+describe("one tab per folder", () => {
+  it("plans again in the folder's finished tab, dropping its unapplied plan", async () => {
+    await bootRepo({ handlers: { discard_plan: () => undefined } });
+    plan("/repo/a");
+    await flush();
+    handlers.run_plan = () => 2;
+    plan("/repo/b");
+    await flush();
+    out(1, PLAN_LINE);
+    exitEv(1, { hasChanges: true });
+
+    handlers.run_plan = () => 3;
+    applyPlan("/repo/a");
+    await flush();
+    expect(invoked("discard_plan")).toEqual([{ planRunId: 1 }]);
+    expect(tabLabels()).toEqual(["apply · a", "plan · b"]);
+    expect(selectedTab()).toBe(0);
+    expect(output().textContent).toBe("");
+    expect(status()).toBe("running…");
+  });
+
+  it("waits for the folder's run to finish, then runs in its tab", async () => {
+    await bootRepo({ handlers: { apply_plan: () => undefined } });
+    plan("/repo/a");
+    await flush();
+    handlers.run_plan = () => 2;
+    plan("/repo/b");
+    await flush();
+    expect(selectedTab()).toBe(1);
+
+    plan("/repo/a");
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(2);
+    // Shown, with what's waiting.
+    expect(selectedTab()).toBe(0);
+    expect(status()).toBe("running… · plan queued");
+    // An apply asked for too covers the plan.
+    applyPlan("/repo/a");
+    plan("/repo/a");
+    await flush();
+    expect(status()).toBe("running… · apply queued");
+
+    handlers.run_plan = () => 3;
+    exitEv(1, { hasChanges: false });
+    await flush();
+    expect(invoked("run_plan")).toEqual([{ dir: "/repo/a" }, { dir: "/repo/b" }, { dir: "/repo/a" }]);
+    expect(tabLabels()).toEqual(["apply · a", "plan · b"]);
+    expect(status()).toBe("running…");
+
+    // The queued apply still asks first.
+    out(3, PLAN_LINE);
+    m.ask.mockResolvedValueOnce(true);
+    exitEv(3, { hasChanges: true });
+    await flush();
+    expect(invoked("apply_plan")).toEqual([{ planRunId: 3 }]);
+  });
+
+  it("waits while the apply question is open", async () => {
+    await bootRepo();
+    applyPlan("/repo/a");
+    await flush();
+    out(1, PLAN_LINE);
+    const answer = deferred<boolean>();
+    m.ask.mockReturnValueOnce(answer.promise);
+    exitEv(1, { hasChanges: true });
+    await flush();
+
+    plan("/repo/a");
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(1);
+    expect(status()).toBe(`${PLAN_LINE} (not applied) · plan queued`);
+    // The Apply button doesn't ask a second time meanwhile.
+    byId("run-apply").click();
+    await flush();
+    expect(m.ask).toHaveBeenCalledTimes(1);
+
+    handlers.run_plan = () => 2;
+    answer.resolve(false);
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(2);
+    expect(tabLabels()).toEqual(["plan · a"]);
+    expect(status()).toBe("running…");
+  });
+
+  it("waits for an apply that was confirmed", async () => {
+    await bootRepo({ handlers: { apply_plan: () => undefined } });
+    applyPlan("/repo/a");
+    await flush();
+    out(1, PLAN_LINE);
+    const answer = deferred<boolean>();
+    m.ask.mockReturnValueOnce(answer.promise);
+    exitEv(1, { hasChanges: true });
+    await flush();
+    plan("/repo/a");
+    answer.resolve(true);
+    await flush();
+    expect(status()).toBe("applying… · plan queued");
+
+    handlers.run_plan = () => 2;
+    exitEv(1);
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(2);
+    expect(tabLabels()).toEqual(["plan · a"]);
+  });
+
+  it("drops the waiting action when the run is cancelled", async () => {
+    await bootRepo({ handlers: { cancel_tofu: () => undefined } });
+    byId("run-cancel").click(); // nothing selected
+    plan("/repo/a");
+    await flush();
+    plan("/repo/a");
+    await flush();
+    expect(status()).toBe("running… · plan queued");
+    byId("run-cancel").click();
+    expect(invoked("cancel_tofu")).toEqual([{ runId: 1 }]);
+    expect(status()).toBe("running…");
+    exitEv(1, { cancelled: true, success: false, code: 130 });
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(1);
+  });
+
+  it("waits for a run that's still starting, or an import in the folder", async () => {
+    await bootRepo({ handlers: { run_import: () => 9 } });
+    const d = deferred<number>();
+    handlers.run_plan = () => d.promise;
+    plan("/repo/envs/prod");
+    plan("/repo/envs/prod");
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(1);
+    d.resolve(1);
+    await flush();
+    expect(tabLabels()).toEqual(["plan · envs/prod"]);
+    expect(invoked("run_plan")).toHaveLength(1);
+    handlers.run_plan = () => 2;
+    exitEv(1, { hasChanges: false });
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(2);
+    expect(tabLabels()).toEqual(["plan · envs/prod"]);
+    exitEv(2, { hasChanges: false });
+
+    // An import isn't the folder's tab, but tofu can't plan while it runs.
+    row("envs").click();
+    await flush();
+    rightClick(row("prod"));
+    await flush();
+    m.openImportDialog.mockResolvedValueOnce({ address: "a.b", id: "x", vars: [] });
+    menuAction("Import…");
+    await flush();
+    handlers.run_plan = () => 3;
+    menuAction("Plan");
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(2);
+    expect(status()).toBe("no changes · plan queued");
+    exitEv(9);
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(3);
+    expect(tabLabels()).toEqual(["plan · envs/prod", "import · envs/prod"]);
+    expect(selectedTab()).toBe(0);
+  });
+
+  it("opens a new tab if the old one's plan was applied while starting", async () => {
+    await bootRepo({ handlers: { apply_plan: () => undefined } });
+    plan("/repo/a");
+    await flush();
+    out(1, PLAN_LINE);
+    exitEv(1, { hasChanges: true });
+    const d = deferred<number>();
+    handlers.run_plan = () => d.promise;
+    plan("/repo/a");
+    m.ask.mockResolvedValueOnce(true);
+    byId("run-apply").click();
+    await flush();
+    expect(invoked("apply_plan")).toEqual([{ planRunId: 1 }]);
+    d.resolve(2);
+    await flush();
+    expect(tabLabels()).toEqual(["apply · a", "plan · a"]);
+    expect(selectedTab()).toBe(1);
+  });
+});
+
 describe("applying a plan", () => {
   async function readyPlan(extra: Record<string, Handler> = {}) {
     await bootRepo({ handlers: { apply_plan: () => undefined, ...extra } });

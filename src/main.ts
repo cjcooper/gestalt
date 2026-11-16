@@ -60,7 +60,10 @@ function registerRun(run: Run, replaces?: number) {
   const pending = early.get(run.id);
   early.delete(run.id);
   if (pending) run.lines.push(...pending.lines);
-  if (replaces != null && runs.has(replaces)) {
+  const old = replaces != null ? runs.get(replaces) : undefined;
+  // A tab that started running again meanwhile (its plan was applied) keeps its run.
+  if (old && old.status !== "running") {
+    discardPlan(old);
     const entries = [...runs].map(([id, r]): [number, Run] => (id === replaces ? [run.id, run] : [id, r]));
     runs.clear();
     for (const [id, r] of entries) runs.set(id, r);
@@ -103,6 +106,51 @@ async function startRun(
  */
 const startPlan = (dir: string, applyWhenReady = false, replaces?: number) =>
   startRun(dir, applyWhenReady ? "apply" : "plan", "run_plan", { dir }, { applyWhenReady }, replaces);
+
+/** Plan/Apply asked for while the folder was busy, by folder; an apply covers a plan. */
+const queued = new Map<string, { apply: boolean }>();
+/** Folders whose Plan/Apply is being started (no run id yet). */
+const starting = new Set<string>();
+/** Runs whose "Apply this plan?" question is open. */
+const confirming = new Set<number>();
+
+/** The folder's plan/apply tab (the newest, if there are several). */
+function folderTab(dir: string): Run | undefined {
+  return [...runs.values()].reverse().find((r) => r.dir === dir && (r.kind === "plan" || r.kind === "apply"));
+}
+
+/** Something is running in the folder, or its tab is waiting on the apply question. */
+function folderBusy(dir: string): boolean {
+  if (starting.has(dir)) return true;
+  return [...runs.values()].some((r) => r.dir === dir && (r.status === "running" || confirming.has(r.id)));
+}
+
+/**
+ * Plan (or apply) `dir` from the tree, a commit's folder list or an editor.
+ * The folder keeps one tab: the action reuses it, waiting for whatever is
+ * running there to finish first.
+ */
+function requestPlan(dir: string, apply = false) {
+  if (folderBusy(dir)) {
+    queued.set(dir, { apply: apply || !!queued.get(dir)?.apply });
+    const tab = folderTab(dir);
+    if (tab) selectRun(tab.id);
+    return;
+  }
+  starting.add(dir);
+  void startPlan(dir, apply, folderTab(dir)?.id).finally(() => {
+    starting.delete(dir);
+    runQueued(dir);
+  });
+}
+
+/** Start the folder's waiting action once nothing else is going on there. */
+function runQueued(dir: string) {
+  const next = queued.get(dir);
+  if (!next || folderBusy(dir)) return;
+  queued.delete(dir);
+  requestPlan(dir, next.apply);
+}
 
 /** A failed or cancelled plan/apply can be planned again in its own tab. */
 const canReplan = (run: Run) => (run.kind === "plan" || run.kind === "apply") && (run.status === "failed" || run.status === "cancelled");
@@ -163,16 +211,26 @@ async function cleanCaches(dir: string) {
 }
 
 async function confirmAndApply(plan: Run) {
-  if (plan.planState !== "ready") return;
+  if (plan.planState !== "ready" || confirming.has(plan.id)) return;
   const summary = planSummary(plan) ?? "The plan has changes.";
-  const ok = await ask(`Apply this plan to\n${plan.dir}?\n\n${summary}\n\nThis will change real infrastructure.`, {
-    title: "Apply plan",
-    kind: "warning",
-    okLabel: "Apply",
-    cancelLabel: "Cancel",
-  });
-  // Re-check: the tab may have been closed while the dialog was open.
-  if (!ok || plan.planState !== "ready") return;
+  // Plan/Apply asked for in this folder meanwhile waits for the answer.
+  confirming.add(plan.id);
+  let ok: boolean;
+  try {
+    ok = await ask(`Apply this plan to\n${plan.dir}?\n\n${summary}\n\nThis will change real infrastructure.`, {
+      title: "Apply plan",
+      kind: "warning",
+      okLabel: "Apply",
+      cancelLabel: "Cancel",
+    });
+  } finally {
+    confirming.delete(plan.id);
+  }
+  // Re-check: the tab may have been closed or replaced while the dialog was open.
+  if (!ok || plan.planState !== "ready") {
+    runQueued(plan.dir);
+    return;
+  }
 
   // The apply continues this run: its output and exit arrive under plan.id.
   plan.planState = "applied";
@@ -209,6 +267,7 @@ function handleExit(run: Run, e: ExitEvent) {
     selectRun(run.id);
     void confirmAndApply(run);
   }
+  runQueued(run.dir);
 }
 
 // ---- Run rendering ---------------------------------------------------------
@@ -270,7 +329,8 @@ function renderHeader() {
   $("run-title").textContent = run.kind === "clean" ? `clean caches — ${run.dir}` : `tofu ${run.kind} — ${run.dir}`;
   const status = $("run-status");
   status.className = `status ${run.status}`;
-  status.textContent = statusText(run);
+  const waiting = run === folderTab(run.dir) ? queued.get(run.dir) : undefined;
+  status.textContent = statusText(run) + (waiting ? ` · ${waiting.apply ? "apply" : "plan"} queued` : "");
   $<HTMLButtonElement>("run-replan").hidden = !canReplan(run);
   $<HTMLButtonElement>("run-apply").hidden = run.planState !== "ready";
   $<HTMLButtonElement>("run-cancel").hidden = run.status !== "running" || run.kind === "clean";
@@ -327,14 +387,23 @@ $("run-replan").onclick = () => {
 };
 
 $("run-cancel").onclick = () => {
-  if (selectedRunId != null) invoke("cancel_tofu", { runId: selectedRunId }).catch(console.error);
+  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
+  if (!run) return;
+  // Cancelling stops the folder's waiting Plan/Apply too.
+  queued.delete(run.dir);
+  renderHeader();
+  invoke("cancel_tofu", { runId: run.id }).catch(console.error);
 };
 
+/** Drop a run's saved plan, if it has one waiting to be applied. */
+function discardPlan(run: Run) {
+  if (run.planState !== "ready") return;
+  run.planState = "discarded";
+  invoke("discard_plan", { planRunId: run.id }).catch(console.error);
+}
+
 function closeRun(run: Run) {
-  if (run.planState === "ready") {
-    run.planState = "discarded";
-    invoke("discard_plan", { planRunId: run.id }).catch(console.error);
-  }
+  discardPlan(run);
   runs.delete(run.id);
   if (run.id === selectedRunId) {
     const remaining = [...runs.keys()];
@@ -367,7 +436,7 @@ listen("menu://settings", () => openSettings());
 // Plan from one of this window's file editor windows: run here and come
 // forward to show it.
 listen<PlanRequest>(PLAN_EVENT, ({ payload }) => {
-  void startPlan(payload.dir);
+  requestPlan(payload.dir);
   void appWindow.setFocus();
 });
 
@@ -448,9 +517,9 @@ async function showContextMenu(dir: string, isModule: boolean, entry: DirEntry) 
   const tofuItems = isModule
     ? [
         await item("Import…", () => void startImport(dir)),
-        await item("Plan", () => void startPlan(dir)),
+        await item("Plan", () => requestPlan(dir)),
         // Plans first, then asks to apply that exact saved plan.
-        await item("Apply…", () => void startPlan(dir, true)),
+        await item("Apply…", () => requestPlan(dir, true)),
         await PredefinedMenuItem.new({ item: "Separator" }),
       ]
     : [];
@@ -833,7 +902,7 @@ document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
 
 initSystemColors();
 initSidebar(
-  (dir) => void startPlan(dir),
-  (dir) => void startPlan(dir, true),
+  (dir) => requestPlan(dir),
+  (dir) => requestPlan(dir, true),
 );
 void openInitialRoot();
