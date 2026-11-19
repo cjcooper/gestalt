@@ -5,7 +5,7 @@
 use crate::cloud::{self, CloudSettings};
 use crate::shell_env::ShellEnv;
 use crate::windows::{self, Windows};
-use crate::{clean, editor_window, file_edit, git, initial_root, list_dir, open_root, os_trash, reload_shell_env, shell_env_status, system_colors, tofu, watch};
+use crate::{clean, editor_window, file_edit, file_icon, git, initial_root, list_dir, open_root, os_trash, reload_shell_env, shell_env_status, system_colors, tofu, watch};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -162,6 +162,7 @@ pub fn run() {
             shell_env_status,
             reload_shell_env,
             system_colors::system_colors,
+            file_icon::file_icon,
             cloud::cloud_get,
             cloud::cloud_set,
             cloud::cloud_effective,

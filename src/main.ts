@@ -554,14 +554,30 @@ function selectRow(row: HTMLElement, path: string) {
   selectedPath = path;
 }
 
-/** A link icon after the label of a symlinked file or folder. */
+/** The shortcut arrow drawn over the icon of a symlinked file or folder. */
 function linkBadge(entry: DirEntry): HTMLElement[] {
   if (!entry.isSymlink) return [];
   const badge = document.createElement("span");
   badge.className = "link-badge";
-  badge.innerHTML = icons.link;
+  badge.innerHTML = icons.linkArrow;
   badge.title = "Symbolic link: changes affect everywhere it's linked from";
   return [badge];
+}
+
+/**
+ * The system's icon for a file, one lookup per file type (extension, or the
+ * whole name when there is none). A symlink is looked up on its own: it gets
+ * its target's icon, which may differ from what its name suggests.
+ */
+const osIcons = new Map<string, Promise<string | null>>();
+function osIcon(entry: DirEntry): Promise<string | null> {
+  const lookup = () => invoke<string | null>("file_icon", { path: entry.path }).catch(() => null);
+  if (entry.isSymlink) return lookup();
+  const dot = entry.name.lastIndexOf(".");
+  const key = dot > 0 ? entry.name.slice(dot).toLowerCase() : entry.name;
+  let icon = osIcons.get(key);
+  if (!icon) osIcons.set(key, (icon = lookup()));
+  return icon;
 }
 
 /** A file row. Right-clicking it offers the run menu for its folder. */
@@ -579,10 +595,23 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   const icon = document.createElement("span");
   icon.className = "icon";
   icon.innerHTML = fileIcon(kind);
+  icon.append(...linkBadge(entry));
+  // OpenTofu files keep their own icons (the system's are usually blank
+  // pages); the rest swap to what Finder shows once it arrives.
+  if (kind !== "tofu" && kind !== "vars") {
+    void osIcon(entry).then((url) => {
+      if (!url) return;
+      const img = document.createElement("img");
+      img.className = "os-icon";
+      img.src = url;
+      img.alt = "";
+      icon.firstElementChild!.replaceWith(img);
+    });
+  }
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;
-  row.append(caret, icon, label, ...linkBadge(entry));
+  row.append(caret, icon, label);
 
   row.onclick = () => selectRow(row, entry.path);
   row.title = `${entry.path}\nDouble-click to edit`;
@@ -618,12 +647,13 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
   const icon = document.createElement("span");
   icon.className = "icon";
   icon.innerHTML = icons.folder;
+  icon.append(...linkBadge(entry));
 
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;
 
-  row.append(caret, icon, label, ...linkBadge(entry));
+  row.append(caret, icon, label);
   if (entry.isModule) {
     const badge = document.createElement("span");
     badge.className = "badge";
@@ -647,7 +677,8 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
   const setOpen = (open: boolean) => {
     children.hidden = !open;
     caret.textContent = open ? "▾" : "▸";
-    icon.innerHTML = open ? icons.folderOpen : icons.folder;
+    // Swap only the folder glyph, keeping any symlink arrow drawn over it.
+    icon.firstElementChild!.outerHTML = open ? icons.folderOpen : icons.folder;
     if (open) expanded.add(entry.path);
     else expanded.delete(entry.path);
   };
