@@ -495,6 +495,22 @@ function linkBadge(entry: DirEntry): HTMLElement[] {
   return [badge];
 }
 
+/**
+ * The system's icon for a file, one lookup per file type (extension, or the
+ * whole name when there is none). A symlink is looked up on its own: it gets
+ * its target's icon, which may differ from what its name suggests.
+ */
+const osIcons = new Map<string, Promise<string | null>>();
+function osIcon(entry: DirEntry): Promise<string | null> {
+  const lookup = () => invoke<string | null>("file_icon", { path: entry.path }).catch(() => null);
+  if (entry.isSymlink) return lookup();
+  const dot = entry.name.lastIndexOf(".");
+  const key = dot > 0 ? entry.name.slice(dot).toLowerCase() : entry.name;
+  let icon = osIcons.get(key);
+  if (!icon) osIcons.set(key, (icon = lookup()));
+  return icon;
+}
+
 /** A file row. Right-clicking it offers the run menu for its folder. */
 function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLIElement {
   const li = document.createElement("li");
@@ -511,6 +527,18 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   icon.className = "icon";
   icon.innerHTML = fileIcon(kind);
   icon.append(...linkBadge(entry));
+  // OpenTofu files keep their own icons (the system's are usually blank
+  // pages); the rest swap to what Finder shows once it arrives.
+  if (kind !== "tofu" && kind !== "vars") {
+    void osIcon(entry).then((url) => {
+      if (!url) return;
+      const img = document.createElement("img");
+      img.className = "os-icon";
+      img.src = url;
+      img.alt = "";
+      icon.firstElementChild!.replaceWith(img);
+    });
+  }
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;

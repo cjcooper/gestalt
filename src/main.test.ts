@@ -142,6 +142,7 @@ async function boot(opts: BootOptions = {}) {
     run_plan: () => 1,
     cloud_effective: () => [],
     cloud_folders: () => ({}),
+    file_icon: () => null,
     ...opts.handlers,
   };
   m.invoke.mockImplementation(invokeRouter(new Proxy({}, { get: (_, k: string) => handlers[k] })));
@@ -714,6 +715,53 @@ describe("folder tree", () => {
     expect(icon.querySelector(".link-badge")).not.toBeNull();
     expect(row("main.tf").querySelector(".link-badge")).toBeNull();
     expect(row("prod").querySelector(".link-badge")).toBeNull();
+  });
+
+  it("shows the system's icon for non-OpenTofu files, once per type", async () => {
+    const url = (p: string) => `data:image/png;base64,${btoa(p)}`;
+    await bootRepo({
+      handlers: {
+        list_dir: (a) =>
+          a!.path === "/repo"
+            ? [
+                file("/repo/README.md"),
+                file("/repo/NOTES.MD"),
+                file("/repo/main.tf"),
+                file("/repo/dev.tfvars"),
+                file("/repo/Makefile"),
+                file("/repo/linked.md", { isSymlink: true }),
+                file("/repo/gone.sh"),
+              ]
+            : [],
+        file_icon: (a) => {
+          const path = a!.path as string;
+          if (path.endsWith(".sh")) throw new Error("no icon");
+          return url(path);
+        },
+      },
+    });
+    await flush();
+    const img = (name: string) => row(name).querySelector<HTMLImageElement>(".icon img.os-icon");
+    // One lookup per extension (case-insensitive), by name when there is
+    // none, and each symlink on its own; none for OpenTofu files.
+    expect(invoked("file_icon")).toEqual([
+      { path: "/repo/README.md" },
+      { path: "/repo/Makefile" },
+      { path: "/repo/linked.md" },
+      { path: "/repo/gone.sh" },
+    ]);
+    expect(img("README.md")!.src).toBe(url("/repo/README.md"));
+    expect(img("NOTES.MD")!.src).toBe(url("/repo/README.md"));
+    expect(img("Makefile")!.src).toBe(url("/repo/Makefile"));
+    expect(img("linked.md")!.src).toBe(url("/repo/linked.md"));
+    // The symlink arrow stays over the system icon.
+    expect(row("linked.md").querySelector(".icon .link-badge")).not.toBeNull();
+    // No icon to be had: keep our own.
+    expect(img("gone.sh")).toBeNull();
+    expect(row("gone.sh").querySelector(".icon")!.innerHTML).toBe(html(icons.fileText));
+    expect(img("main.tf")).toBeNull();
+    expect(row("main.tf").querySelector(".icon")!.innerHTML).toBe(html(icons.fileCode));
+    expect(img("dev.tfvars")).toBeNull();
   });
 
   it("opens Settings from the app menu", async () => {

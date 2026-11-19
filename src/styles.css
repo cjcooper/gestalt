@@ -1167,6 +1167,10 @@ body.editor-window {
   background: var(--bg);
   border-color: var(--border);
 }
+.tree-row .os-icon {
+  width: 16px;
+  height: 16px;
+}
 /* A symlink's shortcut arrow, in a small box over the icon's lower-left corner. */
 .tree-row .icon {
   position: relative;

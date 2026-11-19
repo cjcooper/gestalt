@@ -3,6 +3,7 @@ mod cloud;
 mod delete;
 mod editor_window;
 mod file_edit;
+mod file_icon;
 mod fs;
 mod git;
 mod module_info;
