@@ -432,7 +432,10 @@ body.resizing {
   background: var(--selected);
 }
 .caret {
-  width: 12px;
+  width: 14px;
+  font-size: 18px;
+  line-height: 1;
+  text-align: center;
   color: var(--muted);
   flex: none;
 }
@@ -1164,14 +1167,26 @@ body.editor-window {
   background: var(--bg);
   border-color: var(--border);
 }
-.link-badge {
+/* A symlink's shortcut arrow, in a small box over the icon's lower-left corner. */
+.tree-row .icon {
+  position: relative;
   display: inline-flex;
-  margin-left: 4px;
-  color: var(--muted);
+}
+.link-badge {
+  position: absolute;
+  left: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  padding: 0.5px;
+  border: 1px solid var(--muted);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--fg);
 }
 .link-badge svg {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
+  stroke-width: 3;
 }
 .run-actions {
   display: inline-flex;

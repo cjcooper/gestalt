@@ -102,11 +102,12 @@ const fs: Record<string, DirEntry[]> = {
   ],
   "/repo/envs": [dir("/repo/envs/prod", { isModule: true }), file("/repo/envs/common.tfvars")],
   "/repo/envs/prod": [
-    dir("/repo/envs/prod/shared", { isSymlink: true, hasChildren: false }),
+    dir("/repo/envs/prod/shared", { isSymlink: true }),
     file("/repo/envs/prod/main.tf"),
     file("/repo/envs/prod/prod.tfvars"),
     file("/repo/envs/prod/providers.tf", { isSymlink: true }),
   ],
+  "/repo/envs/prod/shared": [file("/repo/envs/prod/shared/locals.tf")],
 };
 
 const PLAN_LINE = "Plan: 2 to add, 0 to change, 0 to destroy.";
@@ -701,10 +702,16 @@ describe("folder tree", () => {
     await flush();
     row("prod").click();
     await flush();
-    const badge = row("providers.tf").querySelector(".link-badge")!;
-    expect(badge.innerHTML).toBe(html(icons.link));
+    const badge = row("providers.tf").querySelector(".icon .link-badge")!;
+    expect(badge.innerHTML).toBe(html(icons.linkArrow));
     expect((badge as HTMLElement).title).toBe("Symbolic link: changes affect everywhere it's linked from");
-    expect(row("shared").querySelector(".link-badge")).not.toBeNull();
+    expect(row("shared").querySelector(".icon .link-badge")).not.toBeNull();
+    // Opening a symlinked folder swaps its glyph but keeps the arrow.
+    row("shared").click();
+    await flush();
+    const icon = row("shared").querySelector(".icon")!;
+    expect(icon.firstElementChild!.outerHTML).toBe(html(icons.folderOpen));
+    expect(icon.querySelector(".link-badge")).not.toBeNull();
     expect(row("main.tf").querySelector(".link-badge")).toBeNull();
     expect(row("prod").querySelector(".link-badge")).toBeNull();
   });

@@ -485,12 +485,12 @@ function selectRow(row: HTMLElement, path: string) {
   selectedPath = path;
 }
 
-/** A link icon after the label of a symlinked file or folder. */
+/** The shortcut arrow drawn over the icon of a symlinked file or folder. */
 function linkBadge(entry: DirEntry): HTMLElement[] {
   if (!entry.isSymlink) return [];
   const badge = document.createElement("span");
   badge.className = "link-badge";
-  badge.innerHTML = icons.link;
+  badge.innerHTML = icons.linkArrow;
   badge.title = "Symbolic link: changes affect everywhere it's linked from";
   return [badge];
 }
@@ -510,10 +510,11 @@ function buildFileNode(entry: DirEntry, depth: number, parent: DirEntry): HTMLLI
   const icon = document.createElement("span");
   icon.className = "icon";
   icon.innerHTML = fileIcon(kind);
+  icon.append(...linkBadge(entry));
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;
-  row.append(caret, icon, label, ...linkBadge(entry));
+  row.append(caret, icon, label);
 
   row.onclick = () => selectRow(row, entry.path);
   row.title = `${entry.path}\nDouble-click to edit`;
@@ -549,12 +550,13 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
   const icon = document.createElement("span");
   icon.className = "icon";
   icon.innerHTML = icons.folder;
+  icon.append(...linkBadge(entry));
 
   const label = document.createElement("span");
   label.className = "label";
   label.textContent = entry.name;
 
-  row.append(caret, icon, label, ...linkBadge(entry));
+  row.append(caret, icon, label);
   if (entry.isModule) {
     const badge = document.createElement("span");
     badge.className = "badge";
@@ -578,7 +580,8 @@ async function buildNode(entry: DirEntry, depth: number, parent?: DirEntry): Pro
   const setOpen = (open: boolean) => {
     children.hidden = !open;
     caret.textContent = open ? "▾" : "▸";
-    icon.innerHTML = open ? icons.folderOpen : icons.folder;
+    // Swap only the folder glyph, keeping any symlink arrow drawn over it.
+    icon.firstElementChild!.outerHTML = open ? icons.folderOpen : icons.folder;
     if (open) expanded.add(entry.path);
     else expanded.delete(entry.path);
   };
