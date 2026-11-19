@@ -3,6 +3,18 @@ import { highlightTree } from "@lezer/highlight";
 import { syntaxTree } from "@codemirror/language";
 import { createCodeEditor, languageFor } from "./codeEditor";
 
+const jsonFails = vi.hoisted(() => ({ value: false }));
+vi.mock("@codemirror/lang-json", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@codemirror/lang-json")>();
+  return {
+    ...real,
+    json: () => {
+      if (jsonFails.value) throw new Error("boom");
+      return real.json();
+    },
+  };
+});
+
 describe("languageFor", () => {
   it.each([
     ["main.tf", "HCL"],
@@ -39,8 +51,10 @@ describe("languageFor", () => {
     ["Dockerfile", "Dockerfile"],
     ["app.dockerfile", "Dockerfile"],
     ["main.go", "Go"],
-  ])("%s → %s", (name, label) => {
-    expect(languageFor(name)?.label).toBe(label);
+  ])("%s → %s", async (name, label) => {
+    const lang = languageFor(name);
+    expect(lang?.label).toBe(label);
+    expect(await lang?.load()).toBeTruthy();
   });
 
   it("is plain text for anything else", () => {
@@ -57,9 +71,10 @@ describe("createCodeEditor", () => {
     return { parent, o, editor: createCodeEditor(parent, o) };
   };
 
-  it("shows the document with highlighting for its language", () => {
+  it("shows the document with highlighting for its language", async () => {
     const { parent, editor } = make();
     expect(editor.getValue()).toBe('resource "a" "b" {}\n');
+    await editor.ready;
     expect(parent.querySelector(".cm-editor")).not.toBeNull();
     const classes = new Set<string>();
     highlightTree(syntaxTree(editor.view.state), { style: (tags) => (tags.length ? "x" : null) }, (_f, _t, c) => classes.add(c));
@@ -68,10 +83,30 @@ describe("createCodeEditor", () => {
     expect(parent.querySelector(".cm-editor")).toBeNull();
   });
 
-  it("works for plain text", () => {
+  it("works for plain text", async () => {
     const { editor } = make("LICENSE", "text");
+    await editor.ready;
     expect(editor.getValue()).toBe("text");
     expect(syntaxTree(editor.view.state).length).toBe(0);
+    editor.destroy();
+  });
+
+  it("leaves a destroyed editor alone when its language arrives", async () => {
+    const { editor } = make("a.json", "{}");
+    const dispatch = vi.spyOn(editor.view, "dispatch");
+    editor.destroy();
+    await editor.ready;
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("stays plain text, and says why, if the language fails to load", async () => {
+    jsonFails.value = true;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { editor } = make("a.json", "{}");
+    await editor.ready;
+    expect(syntaxTree(editor.view.state).length).toBe(0);
+    expect(error).toHaveBeenCalledWith("couldn't load highlighting for a.json:", expect.any(Error));
+    jsonFails.value = false;
     editor.destroy();
   });
 
