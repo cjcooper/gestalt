@@ -144,6 +144,8 @@ pub fn run() {
             let config = app.path().app_config_dir()?;
             app.manage(CloudSettings::load(config.join(cloud::FILE_NAME)));
             tofu::clear_stale_plans(app.handle());
+            let main = app.config().app.windows.iter().find(|w| w.label == windows::MAIN).cloned();
+            windows::build_main(app.handle(), &main.expect("tauri.conf.json defines the main window"))?;
             system_colors::watch(app.handle());
             // The launch window takes the first folder named; the rest get their own.
             let home = std::env::var_os("HOME");
@@ -161,6 +163,7 @@ pub fn run() {
             shell_env_status,
             reload_shell_env,
             system_colors::system_colors,
+            windows::window_vibrancy,
             file_icon::file_icon,
             cloud::cloud_get,
             cloud::cloud_set,

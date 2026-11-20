@@ -9,6 +9,12 @@
   </head>
 
   <body>
+    <!-- The title bar, drawn by the page when the window has none (macOS,
+         windowChrome.ts): the window controls sit over its left end, and
+         dragging it moves the window. -->
+    <div class="titlebar" data-tauri-drag-region>
+      <span id="window-title" class="window-title" data-tauri-drag-region>Gestalt</span>
+    </div>
     <header class="toolbar">
       <button id="open-root" class="primary with-icon" title="Open folder (⌘O)">
         <span class="icon" data-icon="folderPlus"></span>Open folder…

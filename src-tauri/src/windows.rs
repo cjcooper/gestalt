@@ -4,6 +4,11 @@
 //! process, which the single-instance plugin stops after handing its
 //! arguments to [`second_instance`]: each folder opens in a new window, or
 //! brings forward the window that already has it open.
+//!
+//! Workspace windows look like Paddock's and subduer's: on macOS the page
+//! draws its own title bar under the window controls, and the window shows
+//! the sidebar material (dimmed when inactive, as in Finder) through the
+//! side pane and toolbar while the output pane stays opaque.
 
 use crate::{editor_window, tofu, watch};
 use std::collections::HashMap;
@@ -11,6 +16,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tauri::utils::config::WindowConfig;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// The window from `tauri.conf.json`, opened at launch.
@@ -75,6 +81,34 @@ pub fn folder_args<I: IntoIterator<Item = S>, S: AsRef<OsStr>>(args: I, cwd: Opt
     args.into_iter().filter_map(|a| folder_arg(a, cwd, home)).collect()
 }
 
+/// Whether this system has a material to show through (see the module docs).
+pub fn vibrancy() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// Build a workspace window with its own title bar, transparent so the
+/// material can show through: only a window made transparent when it's
+/// created can. The page turns the material on (see [`window_vibrancy`]).
+fn build<R: Runtime>(builder: WebviewWindowBuilder<'_, R, AppHandle<R>>) -> tauri::Result<WebviewWindow<R>> {
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    builder.transparent(vibrancy()).build()
+}
+
+/// The launch window, from its `tauri.conf.json` entry (`"create": false`,
+/// so it can get the workspace windows' title bar and material).
+pub fn build_main<R: Runtime>(app: &AppHandle<R>, config: &WindowConfig) -> tauri::Result<WebviewWindow<R>> {
+    build(WebviewWindowBuilder::from_config(app, config)?)
+}
+
+/// Whether the page should draw its own title bar and show the sidebar
+/// material, which it sets itself (`setEffects`): setting it from here
+/// isn't possible under the test runtime.
+#[tauri::command]
+pub fn window_vibrancy() -> bool {
+    vibrancy()
+}
+
 /// A new window, opening `root` if given (else the welcome panel).
 pub fn open<R: Runtime>(app: &AppHandle<R>, root: Option<PathBuf>) -> tauri::Result<WebviewWindow<R>> {
     let windows = app.state::<Windows>();
@@ -82,12 +116,11 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, root: Option<PathBuf>) -> tauri::Res
     if let Some(root) = root {
         windows.pending.lock().unwrap().insert(label.clone(), root);
     }
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title("Gestalt")
         .inner_size(1200.0, 800.0)
-        .min_inner_size(700.0, 400.0)
-        .build()
-        .inspect_err(|_| windows.forget(&label))
+        .min_inner_size(700.0, 400.0);
+    build(builder).inspect_err(|_| windows.forget(&label))
 }
 
 fn focus<R: Runtime>(window: &WebviewWindow<R>) {
@@ -269,6 +302,17 @@ mod tests {
         assert_eq!(windows.workspace_root("workspace-2"), Some(PathBuf::from("/b")));
         assert_eq!(windows.workspace_root(&editor_window::label_for("main", "/b/main.tf")), None);
         assert_eq!(windows.workspace_root("about"), None);
+    }
+
+    #[test]
+    fn workspace_windows_show_the_sidebar_material() {
+        assert_eq!(vibrancy(), cfg!(target_os = "macos"));
+        assert_eq!(window_vibrancy(), vibrancy());
+
+        let app = app();
+        let config = WindowConfig { label: MAIN.into(), create: false, ..Default::default() };
+        assert_eq!(build_main(app.handle(), &config).unwrap().label(), MAIN);
+        assert_eq!(labels(&app), [MAIN]);
     }
 
     #[test]

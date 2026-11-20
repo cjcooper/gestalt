@@ -12,6 +12,8 @@
     "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Gestalt",
         "width": 1200,
         "height": 800,

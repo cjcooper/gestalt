@@ -361,6 +361,7 @@ describe("opening a folder", () => {
     expect(localStorage.getItem("gestalt.lastRoot")).toBe("/repo");
     expect(m.resetCommits).toHaveBeenCalledWith("/repo");
     expect(m.setTitle).toHaveBeenCalledWith("repo — Gestalt");
+    expect(byId("window-title").textContent).toBe("repo");
     expect(byId("welcome").hidden).toBe(true);
     expect(byId("workspace").hidden).toBe(false);
     expect(byId<HTMLButtonElement>("refresh-tree").disabled).toBe(false);

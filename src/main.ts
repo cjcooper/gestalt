@@ -9,6 +9,7 @@ import { openSettings } from "./settings";
 import { PLAN_EVENT, closeEditorWindows, closeFrontDialog, type PlanRequest } from "./windows";
 import { openImportDialog, type ImportRequest } from "./importDialog";
 import { initSystemColors } from "./systemColors";
+import { initWindowChrome } from "./windowChrome";
 import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
 import {
   describeClean,
@@ -724,6 +725,8 @@ async function loadRoot(path: string) {
   $("root-path").textContent = path;
   $("root-path").title = "";
   appWindow.setTitle(`${baseName(path)} — Gestalt`).catch(console.error);
+  // The native title is hidden on macOS; the page's title bar names the folder.
+  $("window-title").textContent = baseName(path);
   expanded.clear();
   expanded.add(path); // start with the root expanded
   selectedPath = null;
@@ -902,6 +905,7 @@ document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
 });
 
 initSystemColors();
+void initWindowChrome();
 initSidebar(
   (dir) => requestPlan(dir),
   (dir) => requestPlan(dir, true),

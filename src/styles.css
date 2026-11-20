@@ -205,6 +205,58 @@ button.big {
   flex: 1;
 }
 
+/* ---- Window chrome (windowChrome.ts), as in Paddock and subduer ---- */
+
+/* Only with the OS material, i.e. when the window has no native title bar:
+   28px, with the window controls over its left end. */
+.titlebar {
+  display: none;
+}
+:root[data-vibrancy] .titlebar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 80px;
+}
+.window-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The material shows through the title bar, toolbar and side pane, as in
+   Finder; the output pane (and the welcome panel) stay opaque. */
+:root[data-vibrancy],
+:root[data-vibrancy] body,
+:root[data-vibrancy] .toolbar {
+  background: transparent;
+}
+:root[data-vibrancy] .runs,
+:root[data-vibrancy] .welcome {
+  background: var(--bg);
+}
+:root[data-vibrancy] .tree-row:hover,
+:root[data-vibrancy] .commit:hover {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+:root[data-vibrancy] .tree-row.selected,
+:root[data-vibrancy] .commit.selected {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* A desktop app, not a page: its chrome doesn't select as text. */
+.titlebar,
+.toolbar,
+.side-tabs,
+.commit,
+.run-tabs,
+.run-header {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
