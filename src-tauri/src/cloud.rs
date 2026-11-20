@@ -3,8 +3,13 @@
 //!
 //! Settings live in the app's config folder ([`FILE_NAME`]), never in the
 //! repo, so each person can use their own profile names. Each setting is
-//! inherited from the nearest folder above that has it, so a repo root can
-//! name the profile and one subfolder a region.
+//! inherited from the nearest folder above that has it, so one folder can
+//! name the profile and a folder below it a region.
+//!
+//! A repository's top folder can't have settings, and nothing above it
+//! applies inside it: an account there would reach every module in the repo,
+//! so each part of the tree has to name its own. (Settings kept there by
+//! earlier versions are ignored, and can still be cleared.)
 //!
 //! Inside a git repository, settings are kept by repository and path within
 //! it, so every checkout of the repo — the main one and each worktree opened
@@ -302,7 +307,8 @@ impl CloudSettings {
     }
 
     /// Every folder with settings of its own that the checkout `root` is in
-    /// shows (as paths in that checkout), and every folder outside one.
+    /// shows (as paths in that checkout), except its top, and every folder
+    /// outside one.
     pub fn folders(&self, root: &Path) -> BTreeMap<String, Own> {
         let store = self.store.lock().unwrap();
         let mut out: BTreeMap<String, Own> = BTreeMap::new();
@@ -312,7 +318,8 @@ impl CloudSettings {
         if let Some(co) = checkout(&canon(root)) {
             let tables = [(Scope::Shared, store.repos.get(&path_key(&co.repo))), (Scope::Workspace, store.workspaces.get(&path_key(&co.top)))];
             for (scope, table) in tables {
-                for (rel, s) in table.into_iter().flatten() {
+                // The top's own are ignored (see the module docs).
+                for (rel, s) in table.into_iter().flatten().filter(|(rel, _)| *rel != ".") {
                     let own = out.entry(path_key(&co.abs(rel))).or_default();
                     *(if scope == Scope::Shared { &mut own.shared } else { &mut own.workspace }) = s.clone();
                 }
@@ -334,6 +341,12 @@ impl CloudSettings {
             }
         }
         let slot = Self::slot(dir, scope)?;
+        if slot.owner.is_some() && slot.path == "." && !clean.is_empty() {
+            return Err(format!(
+                "{} is the top of its repository, which can't have a cloud account: choose one on the folders below it",
+                dir.display()
+            ));
+        }
         let mut store = self.store.lock().unwrap();
         let before = store.clone();
         if slot.owner.is_some() && scope == Scope::Shared {
@@ -363,14 +376,18 @@ impl CloudSettings {
     }
 
     /// Settings in effect in `dir`: for each field, the value on the nearest
-    /// folder at or above `dir` that has one; at one folder, the checkout's
-    /// override first, then the shared setting. In [`FIELDS`] order.
+    /// folder at or above `dir` that has one, up to (not including) its
+    /// checkout's top; at one folder, the checkout's override first, then the
+    /// shared setting. In [`FIELDS`] order.
     pub fn resolve(&self, dir: &Path) -> Vec<Resolved> {
         let dir = canon(dir);
         let co = checkout(&dir);
         let store = self.store.lock().unwrap();
         let mut found: BTreeMap<&str, Resolved> = BTreeMap::new();
         for d in dir.ancestors() {
+            if co.as_ref().is_some_and(|c| d == c.top) {
+                break;
+            }
             let inside = co.as_ref().filter(|c| d.starts_with(&c.top));
             let layers = [
                 inside.map(|c| c.slot(Scope::Workspace, d)),
@@ -786,41 +803,86 @@ mod tests {
         let file = base.join("cfg/cloud.json");
         let cs = CloudSettings::load(file.clone());
         let ws = |key: &str, value: &str, source: &Path| Resolved { scope: Scope::Workspace, ..r(key, value, source) };
+        let (accounts, wt_accounts) = (main.join("accounts"), wt.join("accounts"));
 
-        cs.set(&main, Scope::Shared, s(&[("aws.profile", "dev"), ("aws.region", "us-east-1")])).unwrap();
+        cs.set(&accounts, Scope::Shared, s(&[("aws.profile", "dev"), ("aws.region", "us-east-1")])).unwrap();
         cs.set(&main.join("accounts/prd"), Scope::Shared, s(&[("aws.profile", "prd")])).unwrap();
         // Set in the main checkout, in effect in the worktree, as its own paths.
-        assert_eq!(cs.resolve(&wt.join("accounts/prd")), [r("aws.profile", "prd", &wt.join("accounts/prd")), r("aws.region", "us-east-1", &wt)]);
-        assert_eq!(cs.own(&wt, Scope::Shared), s(&[("aws.profile", "dev"), ("aws.region", "us-east-1")]));
+        assert_eq!(
+            cs.resolve(&wt.join("accounts/prd")),
+            [r("aws.profile", "prd", &wt.join("accounts/prd")), r("aws.region", "us-east-1", &wt_accounts)]
+        );
+        assert_eq!(cs.own(&wt_accounts, Scope::Shared), s(&[("aws.profile", "dev"), ("aws.region", "us-east-1")]));
 
         // The worktree's override applies there only, winning at its own folder.
-        cs.set(&wt, Scope::Workspace, s(&[("aws.profile", "sandbox")])).unwrap();
-        assert_eq!(cs.resolve(&wt), [ws("aws.profile", "sandbox", &wt), r("aws.region", "us-east-1", &wt)]);
+        cs.set(&wt_accounts, Scope::Workspace, s(&[("aws.profile", "sandbox")])).unwrap();
+        assert_eq!(cs.resolve(&wt_accounts), [ws("aws.profile", "sandbox", &wt_accounts), r("aws.region", "us-east-1", &wt_accounts)]);
         assert_eq!(cs.resolve(&wt.join("accounts/prd"))[0], r("aws.profile", "prd", &wt.join("accounts/prd")));
-        assert_eq!(cs.resolve(&main)[0], r("aws.profile", "dev", &main));
-        assert_eq!(cs.own(&wt, Scope::Workspace), s(&[("aws.profile", "sandbox")]));
-        assert!(cs.own(&main, Scope::Workspace).is_empty());
+        assert_eq!(cs.resolve(&accounts)[0], r("aws.profile", "dev", &accounts));
+        assert_eq!(cs.own(&wt_accounts, Scope::Workspace), s(&[("aws.profile", "sandbox")]));
+        assert!(cs.own(&accounts, Scope::Workspace).is_empty());
         assert!(cs.own(&base, Scope::Workspace).is_empty());
 
         // The tree of each checkout shows its own paths, overrides apart.
         let own = |shared: &[(&str, &str)], workspace: &[(&str, &str)]| Own { shared: s(shared), workspace: s(workspace) };
         let in_wt = cs.folders(&wt.join("accounts"));
         assert_eq!(in_wt.len(), 2);
-        assert_eq!(in_wt[&path_key(&wt)], own(&[("aws.profile", "dev"), ("aws.region", "us-east-1")], &[("aws.profile", "sandbox")]));
-        assert_eq!(cs.folders(&main)[&path_key(&main)].workspace, Settings::new());
+        assert_eq!(in_wt[&path_key(&wt_accounts)], own(&[("aws.profile", "dev"), ("aws.region", "us-east-1")], &[("aws.profile", "sandbox")]));
+        assert_eq!(cs.folders(&main)[&path_key(&accounts)].workspace, Settings::new());
 
         let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(
             saved,
             json!({
-                "repos": {path_key(&git): {".": {"aws.profile": "dev", "aws.region": "us-east-1"}, "accounts/prd": {"aws.profile": "prd"}}},
-                "workspaces": {path_key(&wt): {".": {"aws.profile": "sandbox"}}},
+                "repos": {path_key(&git): {"accounts": {"aws.profile": "dev", "aws.region": "us-east-1"}, "accounts/prd": {"aws.profile": "prd"}}},
+                "workspaces": {path_key(&wt): {"accounts": {"aws.profile": "sandbox"}}},
                 "folders": {},
             })
         );
         // Clearing removes empty tables.
-        cs.set(&wt, Scope::Workspace, Settings::new()).unwrap();
+        cs.set(&wt_accounts, Scope::Workspace, Settings::new()).unwrap();
         assert!(cs.store.lock().unwrap().workspaces.is_empty());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_repository_top_has_no_cloud_account() {
+        let base = temp_dir("cloud-top");
+        let (main, wt, git) = clone_with_worktree(&base);
+        let cs = CloudSettings::load(base.join("cfg/cloud.json"));
+        let prd = main.join("accounts/prd");
+
+        // Refused in either scope; clearing is still fine.
+        for (dir, scope) in [(&main, Scope::Shared), (&wt, Scope::Workspace)] {
+            let err = cs.set(dir, scope, s(&[("aws.profile", "dev")])).unwrap_err();
+            assert_eq!(
+                err,
+                format!("{} is the top of its repository, which can't have a cloud account: choose one on the folders below it", dir.display())
+            );
+            cs.set(dir, scope, s(&[("aws.profile", " ")])).unwrap();
+        }
+        assert!(cs.store.lock().unwrap().repos.is_empty());
+
+        // Kept by an earlier version, at the top or above it: ignored.
+        {
+            let mut store = cs.store.lock().unwrap();
+            store.repos.insert(path_key(&git), [(".".to_string(), s(&[("aws.profile", "old"), ("aws.region", "eu-west-1")]))].into());
+            store.workspaces.insert(path_key(&wt), [(".".to_string(), s(&[("aws.profile", "sb")]))].into());
+            store.folders.insert(path_key(&base), s(&[("gcp.project", "above")]));
+        }
+        assert!(cs.resolve(&prd).is_empty());
+        assert!(cs.resolve(&main).is_empty());
+        assert!(cs.resolve(&wt).is_empty());
+        assert!(!cs.folders(&main).contains_key(&path_key(&main)));
+        assert!(!cs.folders(&wt).contains_key(&path_key(&wt)));
+        // Still shown as the top's own, so the dialog can offer to clear them.
+        assert_eq!(cs.own(&main, Scope::Shared), s(&[("aws.profile", "old"), ("aws.region", "eu-west-1")]));
+        cs.set(&main, Scope::Shared, Settings::new()).unwrap();
+        assert!(cs.own(&main, Scope::Shared).is_empty());
+        // Outside a repository, folders above still apply.
+        let outside = base.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        assert_eq!(cs.resolve(&outside), [r("gcp.project", "above", &base)]);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -848,7 +910,8 @@ mod tests {
         assert_eq!(store.folders.keys().collect::<Vec<_>>(), [&path_key(&prd), &path_key(&outside)]);
         // Written back.
         assert!(std::fs::read_to_string(&file).unwrap().contains("\"repos\""));
-        assert_eq!(cs.resolve(&wt)[0], r("aws.profile", "dev", &wt));
+        // Moved to the top, where it no longer applies.
+        assert!(cs.resolve(&wt).is_empty());
         assert_eq!(cs.resolve(&prd)[0], r("aws.profile", "prd", &prd));
 
         // A leftover shows as the folder's own until saved, which replaces it.
@@ -867,7 +930,7 @@ mod tests {
         std::fs::write(ro.join("cloud.json"), old.to_string()).unwrap();
         std::fs::create_dir(ro.join("cloud.json.tmp")).unwrap(); // blocks the write
         let cs = CloudSettings::load(ro.join("cloud.json"));
-        assert_eq!(cs.resolve(&main)[0], r("aws.profile", "dev", &main));
+        assert_eq!(cs.own(&main, Scope::Shared), s(&[("aws.profile", "dev")]));
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -1090,9 +1153,11 @@ mod tests {
 
         // In a repository: overrides for this checkout only.
         let repo = base.join("repo");
+        let envs = repo.join("envs");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        ipc(&view, "cloud_set", json!({"dir": repo, "values": {"aws.profile": "sandbox"}, "scope": "workspace"})).unwrap();
-        let ctx = ipc(&view, "cloud_get", json!({"dir": repo})).unwrap();
+        std::fs::create_dir(&envs).unwrap();
+        ipc(&view, "cloud_set", json!({"dir": envs, "values": {"aws.profile": "sandbox"}, "scope": "workspace"})).unwrap();
+        let ctx = ipc(&view, "cloud_get", json!({"dir": envs})).unwrap();
         assert_eq!(ctx["repo"], json!({"name": "repo", "top": p(&repo)}));
         assert_eq!((&ctx["own"], &ctx["workspace"]), (&json!({}), &json!({"aws.profile": "sandbox"})));
         // Outside one there's nothing to override.

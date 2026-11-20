@@ -3,7 +3,7 @@ import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { newAnsiState, renderAnsi } from "./ansi";
-import { cloudBadges, cloudParts, cloudSummary, hasOverride, openCloudSettings, providerLogo, type CloudSetting, type OwnSettings } from "./cloudSettings";
+import { cloudBadges, openCloudSettings, providerLogo, type OwnSettings } from "./cloudSettings";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openSettings } from "./settings";
 import { PLAN_EVENT, closeEditorWindows, closeFrontDialog, type PlanRequest } from "./windows";
@@ -449,40 +449,9 @@ listen("menu://close", () => {
 listen("menu://clean-all", () => {
   if (currentRoot) void cleanCaches(currentRoot);
 });
-listen("menu://cloud-settings", () => {
-  if (currentRoot) editCloud(currentRoot);
-});
 listen("cloud://changed", () => {
-  if (!currentRoot) return;
-  void renderTree();
-  void refreshCloudStatus(currentRoot);
+  if (currentRoot) void renderTree();
 });
-
-/** The toolbar button: cloud settings in effect for the open folder, `root`. */
-async function refreshCloudStatus(root: string) {
-  const btn = $<HTMLButtonElement>("cloud-status");
-  btn.hidden = false;
-  const settings = await invoke<CloudSetting[]>("cloud_effective", { dir: root }).catch((e) => {
-    console.error(e);
-    return [] as CloudSetting[];
-  });
-  if (root !== currentRoot) return;
-  const summary = cloudSummary(settings);
-  const parts = cloudParts(settings);
-  btn.querySelector<HTMLElement>(".icon")!.hidden = parts.length > 0;
-  $("cloud-status-text").replaceChildren(
-    ...(parts.length
-      ? parts.flatMap((p) => [providerLogo(p.id, p.title), p.text])
-      : ["No cloud account"]),
-  );
-  btn.classList.toggle("unset", !summary);
-  btn.title = summary
-    ? `tofu runs here use ${summary}${hasOverride(settings) ? " (partly overridden for this workspace only)" : ""}.\nFolders below can override it. Click to change.`
-    : "No AWS profile, gcloud configuration or Azure subscription chosen for this folder. Click to choose one.";
-}
-$("cloud-status").onclick = () => {
-  if (currentRoot) editCloud(currentRoot);
-};
 
 /**
  * Move a file or folder to the Trash, after asking. A symlink goes as a link:
@@ -532,8 +501,10 @@ async function showContextMenu(dir: string, isModule: boolean, entry: DirEntry) 
   const menu = await Menu.new({
     items: [
       ...tofuItems,
-      // Any folder: parent folders hold shared settings for the modules below.
-      await item("Cloud Settings…", () => editCloud(dir)),
+      // Any folder below the opened one: parent folders hold shared settings
+      // for the modules below, but an account on the whole tree would reach
+      // every module in it (the backend refuses a repository's top too).
+      ...(dir === currentRoot ? [] : [await item("Cloud Settings…", () => editCloud(dir))]),
       // Any folder: this folder and everything below it.
       await item("Clean .terraform Caches…", () => void cleanCaches(dir)),
       ...trashItems,
@@ -758,7 +729,6 @@ async function loadRoot(path: string) {
   selectedPath = null;
   await renderTree();
   void resetCommits(path);
-  void refreshCloudStatus(path);
   renderTabs();
 }
 

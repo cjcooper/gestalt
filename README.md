@@ -187,12 +187,17 @@ GESTALT_ROOT = "/path/to/infra"
 
 Each folder can name the cloud account tofu uses there and in every folder
 below it: an AWS profile and region, a gcloud configuration and project, an
-Azure subscription and tenant. Click the cloud button in the toolbar (the open
-folder), right-click a folder, or use **Workspace › Cloud Settings…**. The
-choices come from `~/.aws/config` and `~/.aws/credentials`, `gcloud config
-configurations` and `az login`. Each field is inherited from the nearest
-folder above that sets it, and folders with settings of their own are marked
-in the tree.
+Azure subscription and tenant. Right-click a folder and choose **Cloud
+Settings…**. The choices come from `~/.aws/config` and `~/.aws/credentials`,
+`gcloud config configurations` and `az login`. Each field is inherited from
+the nearest folder above that sets it, and folders with settings of their own
+are marked in the tree.
+
+The opened folder and a repository's top folder can't have a cloud account:
+one there would reach every module in the tree, so each part of it has to
+name its own. Nothing set above a repository's top applies inside it either.
+Settings older versions kept on a repository's top are no longer used; the
+dialog for that folder offers to clear them.
 
 Inside a git repository, settings belong to the repository, not one copy of
 it: every checkout shares them, so a worktree opened to try a change before

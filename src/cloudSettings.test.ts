@@ -4,7 +4,7 @@ import { deferred, flush } from "./testing/dom";
 const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauri.invoke }));
 
-import { cloudBadges, cloudParts, cloudSummary, hasOverride, openCloudSettings, providerLogo } from "./cloudSettings";
+import { cloudBadges, openCloudSettings, providerLogo } from "./cloudSettings";
 
 const available = () => ({
   awsProfiles: [
@@ -52,20 +52,6 @@ beforeEach(() => {
   document.body.replaceChildren();
 });
 
-describe("cloudSummary", () => {
-  it("names what's in effect per provider", () => {
-    expect(cloudSummary([])).toBe("");
-    expect(
-      cloudSummary([
-        { key: "aws.profile", value: "prd", source: "/r" },
-        { key: "aws.region", value: "eu-west-1", source: "/r" },
-        { key: "azure.subscription", value: "s-1", source: "/r" },
-      ]),
-    ).toBe("AWS prd · eu-west-1 | Azure s-1");
-    expect(cloudSummary([{ key: "gcp.project", value: "p", source: "/r" }])).toBe("Google Cloud p");
-  });
-});
-
 describe("cloudBadges", () => {
   it("lists the providers a folder sets, with what it sets", () => {
     expect(cloudBadges({ shared: {}, workspace: {} })).toEqual([]);
@@ -79,21 +65,6 @@ describe("cloudBadges", () => {
     expect(cloudBadges({ shared: { "aws.profile": "prd" }, workspace: { "aws.profile": "sb", "gcp.project": "p" } })).toEqual([
       { id: "aws", title: "AWS profile: sb (this workspace only)" },
       { id: "gcp", title: "Google Cloud project: p (this workspace only)" },
-    ]);
-  });
-});
-
-describe("hasOverride", () => {
-  it("is true when a setting in effect is this workspace's", () => {
-    expect(hasOverride([{ key: "aws.profile", value: "p", source: "/r", scope: "shared" }])).toBe(false);
-    expect(hasOverride([{ key: "aws.profile", value: "p", source: "/r", scope: "workspace" }])).toBe(true);
-  });
-});
-
-describe("cloudParts", () => {
-  it("groups values by provider", () => {
-    expect(cloudParts([{ key: "gcp.configuration", value: "c", source: "/r" }, { key: "gcp.project", value: "p", source: "/r" }])).toEqual([
-      { id: "gcp", title: "Google Cloud", text: "c · p" },
     ]);
   });
 });
@@ -306,5 +277,42 @@ describe("openCloudSettings", () => {
     await p;
     expect(result).toBe(false);
     expect(dialog()).toBeNull();
+  });
+
+  it("offers no account on a repository's top", async () => {
+    const top = context({ dir: "/real/repo", repo: { name: "infra", top: "/real/repo" } });
+    const { p, result } = await open(top);
+    expect(dialog()!.querySelector(".notice")!.textContent).toBe(
+      "This is the top of infra, which can't have a cloud account: it would apply to every module in the repository. Choose one on the folders below it instead.",
+    );
+    expect(input("aws.profile")).toBeNull();
+    expect(button("Save").hidden).toBe(true);
+    expect(button("Clear all").disabled).toBe(true);
+    button("Cancel").click();
+    await p;
+    expect(result()).toBe(false);
+  });
+
+  it("clears settings an earlier version kept on a repository's top", async () => {
+    const top = context({ dir: "/real/repo", repo: { name: "infra", top: "/real/repo" }, workspace: { "aws.profile": "sb" } });
+    let fail = true;
+    const { p, result } = await open(top, () => {
+      if (fail) throw "disk full";
+    });
+    expect(dialog()!.querySelector(".notice")!.textContent).toMatch(/earlier version of Gestalt are no longer used\.$/);
+    button("Clear all").click();
+    await flush();
+    expect(dialog()!.querySelector<HTMLElement>(".notice.error")!.hidden).toBe(false);
+    expect(dialog()!.querySelector(".notice.error")!.textContent).toBe("disk full");
+    fail = false;
+    tauri.invoke.mockClear();
+    button("Clear all").click();
+    await p;
+    expect(tauri.invoke.mock.calls).toEqual([
+      ["cloud_set", { dir: "/real/repo", values: {}, scope: "shared" }],
+      ["cloud_set", { dir: "/real/repo", values: {}, scope: "workspace" }],
+    ]);
+    // Nothing chosen, so nothing for callers to refresh beyond the event.
+    expect(result()).toBe(false);
   });
 });

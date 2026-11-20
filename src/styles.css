@@ -218,31 +218,6 @@ button.big {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cloud-status {
-  flex: none;
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.cloud-status .icon {
-  color: var(--accent);
-}
-#cloud-status-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-#cloud-status-text .cloud-logo:not(:first-child) {
-  margin-left: 8px;
-}
-.cloud-status.unset {
-  color: var(--muted);
-}
-.cloud-status.unset .icon {
-  color: var(--muted);
-}
-
 .layout {
   flex: 1;
   display: flex;

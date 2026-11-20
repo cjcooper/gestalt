@@ -43,11 +43,10 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         }
     }
     let new_window = MenuItem::with_id(app, NEW_WINDOW_ID, "New Window", true, Some("CmdOrCtrl+Shift+N"))?;
-    let cloud = MenuItem::with_id(app, "cloud-settings", "Cloud Settings…", true, None::<&str>)?;
     let clean = MenuItem::with_id(app, "clean-all", "Clean All .terraform Caches…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let workspace = Submenu::with_items(app, "Workspace", true, &[&new_window, &separator, &cloud, &clean])?;
+    let workspace = Submenu::with_items(app, "Workspace", true, &[&new_window, &separator, &clean])?;
     // macOS: Settings… sits under About in the app menu. Elsewhere there is
     // no app menu, so it goes at the end of the Workspace menu.
     let app_submenu = menu.items()?.into_iter().next().and_then(|i| i.as_submenu().cloned());
@@ -113,7 +112,7 @@ pub fn run() {
         .manage(watch::WorkspaceWatcher::default())
         .menu(app_menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            id @ ("clean-all" | "cloud-settings") => {
+            id @ "clean-all" => {
                 if let Some(window) = windows::focused(app) {
                     let _ = app.emit_to(window.as_str(), &format!("menu://{id}"), ());
                 }

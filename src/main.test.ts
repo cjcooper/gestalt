@@ -140,7 +140,6 @@ async function boot(opts: BootOptions = {}) {
       return fs[a!.path as string] ?? [];
     },
     run_plan: () => 1,
-    cloud_effective: () => [],
     cloud_folders: () => ({}),
     file_icon: () => null,
     ...opts.handlers,
@@ -796,10 +795,10 @@ describe("context menus", () => {
     await flush();
     expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…", "--Separator", 'Move "envs" to Trash…']);
 
-    // The opened folder itself can't be trashed from here.
+    // The opened folder itself can't be trashed from here, nor have a cloud account.
     rightClick(row("/repo"));
     await flush();
-    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…"]);
+    expect(menuTexts()).toEqual(["Clean .terraform Caches…"]);
   });
 
   it("offers a file's folder menu when right-clicking a file", async () => {
@@ -818,9 +817,7 @@ describe("context menus", () => {
 
     rightClick(row("README.md"));
     await flush();
-    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…", "--Separator", 'Move "README.md" to Trash…']);
-    menuAction("Cloud Settings…");
-    expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
+    expect(menuTexts()).toEqual(["Clean .terraform Caches…", "--Separator", 'Move "README.md" to Trash…']);
     rightClick(row("envs"));
     await flush();
     menuAction("Cloud Settings…");
@@ -1780,58 +1777,7 @@ describe("cleaning caches", () => {
 });
 
 describe("cloud settings", () => {
-  const prd = [
-    { key: "aws.profile", value: "prd", source: "/repo" },
-    { key: "aws.region", value: "eu-west-1", source: "/repo/envs" },
-  ];
-  const statusButton = () => byId<HTMLButtonElement>("cloud-status");
-
-  it("shows what applies to the open folder and edits it from the toolbar", async () => {
-    await boot();
-    expect(statusButton().hidden).toBe(true);
-    statusButton().click();
-    expect(m.openCloudSettings).not.toHaveBeenCalled();
-
-    handlers.cloud_effective = () => prd;
-    m.open.mockResolvedValueOnce("/repo");
-    byId("open-root").click();
-    await flush();
-    expect(invoked("cloud_effective")).toEqual([{ dir: "/repo" }]);
-    expect(statusButton().hidden).toBe(false);
-    expect(byId("cloud-status-text").textContent).toBe("prd · eu-west-1");
-    const logo = byId("cloud-status-text").querySelector<HTMLElement>(".cloud-logo.aws")!;
-    expect(logo.title).toBe("AWS");
-    expect(statusButton().querySelector<HTMLElement>(".icon")!.hidden).toBe(true);
-    expect(statusButton().classList.contains("unset")).toBe(false);
-    expect(statusButton().title).toMatch(/^tofu runs here use AWS prd · eu-west-1\./);
-
-    statusButton().click();
-    expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
-
-    handlers.cloud_effective = () => [{ ...prd[0], scope: "workspace" }];
-    emit("cloud://changed");
-    await flush();
-    expect(statusButton().title).toMatch(/^tofu runs here use AWS prd \(partly overridden for this workspace only\)\./);
-  });
-
-  it("says when no account is chosen, or settings can't be read", async () => {
-    await bootRepo();
-    expect(byId("cloud-status-text").textContent).toBe("No cloud account");
-    expect(statusButton().querySelector<HTMLElement>(".icon")!.hidden).toBe(false);
-    expect(statusButton().classList.contains("unset")).toBe(true);
-    expect(statusButton().title).toMatch(/Click to choose one/);
-
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    handlers.cloud_effective = () => {
-      throw "broken";
-    };
-    emit("cloud://changed");
-    await flush();
-    expect(error).toHaveBeenCalledWith("broken");
-    expect(byId("cloud-status-text").textContent).toBe("No cloud account");
-  });
-
-  it("refreshes the tree and toolbar when any window changes settings", async () => {
+  it("refreshes the tree when any window changes settings", async () => {
     await boot();
     emit("cloud://changed");
     await flush();
@@ -1840,37 +1786,12 @@ describe("cloud settings", () => {
     m.open.mockResolvedValueOnce("/repo");
     byId("open-root").click();
     await flush();
-    handlers.cloud_effective = () => prd;
     handlers.cloud_folders = () => ({ "/repo/envs": { shared: {}, workspace: { "aws.region": "eu-west-1" } } });
     emit("cloud://changed");
     await flush();
     expect(invoked("open_root")).toHaveLength(2);
-    expect(byId("cloud-status-text").textContent).toBe("prd · eu-west-1");
     expect(row("envs").querySelector(".cloud-logo")!.className).toBe("cloud-logo aws");
     expect(invoked("cloud_folders").pop()).toEqual({ root: "/repo" });
-  });
-
-  it("ignores a slow answer for a folder that's no longer open", async () => {
-    const slow = deferred<unknown>();
-    await bootRepo({ handlers: { cloud_effective: () => slow.promise } });
-    handlers.cloud_effective = () => [];
-    m.open.mockResolvedValueOnce("/other");
-    byId("open-root").click();
-    await flush();
-    slow.resolve(prd);
-    await flush();
-    expect(byId("cloud-status-text").textContent).toBe("No cloud account");
-  });
-
-  it("opens from the Workspace menu for the open folder only", async () => {
-    await boot();
-    emit("menu://cloud-settings");
-    expect(m.openCloudSettings).not.toHaveBeenCalled();
-    m.open.mockResolvedValueOnce("/repo");
-    byId("open-root").click();
-    await flush();
-    emit("menu://cloud-settings");
-    expect(m.openCloudSettings).toHaveBeenCalledWith("/repo", "repo", expect.any(Function));
   });
 });
 

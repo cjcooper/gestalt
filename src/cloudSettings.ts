@@ -128,22 +128,6 @@ export const PROVIDERS: Provider[] = [
 
 const FIELDS = PROVIDERS.flatMap((p) => p.fields.map((f) => ({ ...f, provider: p })));
 
-/** Each provider with settings in effect, and its values, e.g. "prd · eu-west-1". */
-export function cloudParts(settings: CloudSetting[]): { id: ProviderId; title: string; text: string }[] {
-  const value = (key: string) => settings.find((s) => s.key === key)?.value;
-  return PROVIDERS.flatMap((p) => {
-    const values = p.fields.map((f) => value(f.key)).filter((v): v is string => !!v);
-    return values.length ? [{ id: p.id, title: p.title, text: values.join(" · ") }] : [];
-  });
-}
-
-/** Short summary of settings in effect, e.g. "AWS prd · eu-west-1"; "" if none. */
-export function cloudSummary(settings: CloudSetting[]): string {
-  return cloudParts(settings)
-    .map((p) => `${p.title} ${p.text}`)
-    .join(" | ");
-}
-
 /** A provider's logo, for the tree, toolbar and dialog. */
 export function providerLogo(id: ProviderId, title?: string): HTMLSpanElement {
   const span = h("span", { class: `cloud-logo ${id}` });
@@ -164,9 +148,6 @@ export function cloudBadges({ shared, workspace }: OwnSettings): { id: ProviderI
       .join("\n"),
   }));
 }
-
-/** Whether any setting in effect is this workspace's override. */
-export const hasOverride = (settings: CloudSetting[]) => settings.some((s) => s.scope === "workspace");
 
 const h = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -215,6 +196,34 @@ export async function openCloudSettings(dir: string, shown: string, rel: (path: 
     ctx = await invoke<CloudContext>("cloud_get", { dir });
   } catch (e) {
     body.replaceChildren(h("div", { class: "notice error" }, String(e)));
+    await closed;
+    return false;
+  }
+
+  // A repository's top can't have an account: it would reach every module
+  // in the repo. Settings an earlier version kept there can be cleared.
+  if (ctx.repo && ctx.dir === ctx.repo.top) {
+    const old = Object.keys(ctx.own).length + Object.keys(ctx.workspace).length > 0;
+    body.replaceChildren(
+      h(
+        "div",
+        { class: "notice" },
+        `This is the top of ${ctx.repo.name}, which can't have a cloud account: it would apply to every module in the repository. Choose one on the folders below it instead.` +
+          (old ? "\n\nSettings saved here by an earlier version of Gestalt are no longer used." : ""),
+      ),
+      error,
+    );
+    save.hidden = true;
+    clear.disabled = !old;
+    clear.onclick = async () => {
+      try {
+        for (const scope of ["shared", "workspace"] as const) await invoke("cloud_set", { dir: ctx.dir, values: {}, scope });
+        dialog.close();
+      } catch (e) {
+        error.textContent = String(e);
+        error.hidden = false;
+      }
+    };
     await closed;
     return false;
   }
