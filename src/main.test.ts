@@ -9,6 +9,8 @@ interface MenuItemOpts {
   text?: string;
   action?: () => void;
   predefined?: string;
+  enabled?: boolean;
+  accelerator?: string;
 }
 
 const m = vi.hoisted(() => ({
@@ -17,7 +19,9 @@ const m = vi.hoisted(() => ({
   windowLabel: "main",
   setTitle: vi.fn(),
   onCloseRequested: vi.fn(),
-  menus: [] as { items: { text?: string; action?: () => void; predefined?: string }[]; popup: () => Promise<void> }[],
+  menus: [] as { items: MenuItemOpts[]; popup: () => Promise<void> }[],
+  writeText: vi.fn(),
+  showFiles: vi.fn(),
   ask: vi.fn(),
   message: vi.fn(),
   open: vi.fn(),
@@ -58,6 +62,7 @@ vi.mock("@tauri-apps/api/menu", () => ({
   PredefinedMenuItem: { new: async (opts: { item: string }) => ({ predefined: opts.item }) },
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: m.ask, message: m.message, open: m.open }));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: m.writeText }));
 vi.mock("./cloudSettings", async (actual) => ({
   ...(await actual<typeof import("./cloudSettings")>()),
   openCloudSettings: m.openCloudSettings,
@@ -75,6 +80,7 @@ vi.mock("./sidebar", () => ({
   refreshCommits: m.refreshCommits,
   refreshUncommitted: m.refreshUncommitted,
   resetCommits: m.resetCommits,
+  showFiles: m.showFiles,
 }));
 
 // ---- Fixtures ----------------------------------------------------------------
@@ -788,18 +794,29 @@ describe("context menus", () => {
       "Cloud Settings…",
       "Clean .terraform Caches…",
       "--Separator",
+      "Copy Path",
+      "Copy Relative Path",
+      "--Separator",
       'Move "prod" to Trash…',
     ]);
     expect(lastMenu().popup).toHaveBeenCalled();
 
     rightClick(row("envs"));
     await flush();
-    expect(menuTexts()).toEqual(["Cloud Settings…", "Clean .terraform Caches…", "--Separator", 'Move "envs" to Trash…']);
+    expect(menuTexts()).toEqual([
+      "Cloud Settings…",
+      "Clean .terraform Caches…",
+      "--Separator",
+      "Copy Path",
+      "Copy Relative Path",
+      "--Separator",
+      'Move "envs" to Trash…',
+    ]);
 
     // The opened folder itself can't be trashed from here, nor have a cloud account.
     rightClick(row("/repo"));
     await flush();
-    expect(menuTexts()).toEqual(["Clean .terraform Caches…"]);
+    expect(menuTexts()).toEqual(["Clean .terraform Caches…", "--Separator", "Copy Path", "Copy Relative Path"]);
   });
 
   it("offers a file's folder menu when right-clicking a file", async () => {
@@ -818,7 +835,16 @@ describe("context menus", () => {
 
     rightClick(row("README.md"));
     await flush();
-    expect(menuTexts()).toEqual(["Clean .terraform Caches…", "--Separator", 'Move "README.md" to Trash…']);
+    expect(menuTexts()).toEqual([
+      "Open",
+      "--Separator",
+      "Clean .terraform Caches…",
+      "--Separator",
+      "Copy Path",
+      "Copy Relative Path",
+      "--Separator",
+      'Move "README.md" to Trash…',
+    ]);
     rightClick(row("envs"));
     await flush();
     menuAction("Cloud Settings…");
@@ -1851,5 +1877,345 @@ describe("windows", () => {
     m.onCloseRequested.mockRejectedValue("no permission");
     await bootRepo();
     expect(error).toHaveBeenCalledWith("no permission");
+  });
+});
+
+describe("finding in a run's output", () => {
+  const findBar = () => byId("run-find");
+  const findInput = () => findBar().querySelector<HTMLInputElement>(".find-input")!;
+  const findCount = () => findBar().querySelector(".find-count")!.textContent;
+  const marks = () => [...output().querySelectorAll("mark.find-hit")].map((mk) => mk.textContent);
+  const findType = (s: string) => {
+    findInput().value = s;
+    findInput().dispatchEvent(new Event("input"));
+  };
+
+  it("opens with ⌘F and highlights matches, including new output", async () => {
+    await bootRepo();
+    plan("/repo/envs/prod");
+    await flush();
+    out(1, "\x1b[32m+ aws_s3_bucket.logs");
+    out(1, "plain bucket");
+    expect(findBar().hidden).toBe(true);
+    expect(key("f", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(findBar().hidden).toBe(false);
+    expect(document.activeElement).toBe(findInput());
+    findType("bucket");
+    expect(marks()).toEqual(["bucket", "bucket"]);
+    expect(findCount()).toBe("1 of 2");
+    out(1, "another bucket");
+    expect(marks()).toHaveLength(3);
+    expect(findCount()).toBe("1 of 3");
+
+    // ⌘G / ⇧⌘G step through them.
+    expect(key("g", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(findCount()).toBe("2 of 3");
+    key("G", { ctrlKey: true, shiftKey: true });
+    expect(findCount()).toBe("1 of 3");
+
+    // Another run's output is searched when shown.
+    handlers.run_plan = () => 2;
+    plan("/repo/envs");
+    await flush();
+    out(2, "no match here");
+    expect(findCount()).toBe("No results");
+    tabs()[0].click();
+    expect(marks()).toHaveLength(3);
+    expect(findCount()).toBe("3 matches");
+
+    // Closed: ⌘G is left alone.
+    findInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    expect(marks()).toEqual([]);
+    expect(key("g", { metaKey: true }).defaultPrevented).toBe(false);
+  });
+
+  it("leaves other shortcuts, ⌥ combinations and the welcome panel alone", async () => {
+    await boot();
+    expect(key("f", { metaKey: true }).defaultPrevented).toBe(false);
+    vi.resetModules();
+    loadIndexHtml();
+    await bootRepo();
+    expect(key("f", { metaKey: true, altKey: true }).defaultPrevented).toBe(false);
+    expect(key("f").defaultPrevented).toBe(false);
+    expect(key("p", { metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    expect(key("k", { metaKey: true }).defaultPrevented).toBe(false);
+  });
+});
+
+describe("output and tab menus", () => {
+  const rightClickOutput = async () => {
+    const ev = rightClick(output());
+    await flush();
+    return ev;
+  };
+  const item = (text: string) => lastMenu().items.find((i) => i.text === text)!;
+
+  it("offers nothing with no run shown", async () => {
+    await bootRepo();
+    expect((await rightClickOutput()).defaultPrevented).toBe(true);
+    expect(m.menus).toHaveLength(0);
+  });
+
+  it("copies the selection or all the output, and finds", async () => {
+    m.writeText.mockResolvedValue(undefined);
+    await bootRepo({ handlers: { cancel_tofu: () => undefined } });
+    plan("/repo/envs/prod");
+    await flush();
+    out(1, "\x1b[32mgreen line");
+    out(1, "second");
+    await rightClickOutput();
+    expect(menuTexts()).toEqual([
+      "Copy",
+      "Copy All Output",
+      "Select All",
+      "--Separator",
+      "Find…",
+      "--Separator",
+      "Cancel Run",
+      "--Separator",
+      "Copy Folder Path",
+    ]);
+    expect(lastMenu().popup).toHaveBeenCalled();
+    // Nothing selected: nothing to copy.
+    expect(item("Copy").enabled).toBe(false);
+    expect(item("Copy").accelerator).toBe("CmdOrCtrl+C");
+    expect(item("Copy All Output").enabled).toBe(true);
+
+    menuAction("Copy All Output");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith("green line\nsecond\n");
+
+    menuAction("Select All");
+    expect(document.getSelection()!.toString()).toBe("green line\nsecond\n");
+    await rightClickOutput();
+    expect(item("Copy").enabled).toBe(true);
+    menuAction("Copy");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith("green line\nsecond\n");
+
+    // A selection elsewhere isn't the output's.
+    document.getSelection()!.selectAllChildren(byId("root-path"));
+    await rightClickOutput();
+    expect(item("Copy").enabled).toBe(false);
+
+    menuAction("Copy Folder Path");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith("/repo/envs/prod");
+
+    menuAction("Find…");
+    expect(byId("run-find").hidden).toBe(false);
+
+    menuAction("Cancel Run");
+    expect(invoked("cancel_tofu")).toEqual([{ runId: 1 }]);
+  });
+
+  it("offers a finished run's own actions, and nothing to copy when empty", async () => {
+    await bootRepo({ handlers: { discard_plan: () => undefined } });
+    plan("/repo/envs/prod");
+    await flush();
+    exitEv(1, { hasChanges: true });
+    await rightClickOutput();
+    expect(item("Copy All Output").enabled).toBe(false);
+    expect(menuTexts()).toContain("Apply This Plan…");
+    m.ask.mockResolvedValue(false);
+    menuAction("Apply This Plan…");
+    await flush();
+    expect(m.ask.mock.lastCall![0]).toContain("Apply this plan to\n/repo/envs/prod?");
+
+    handlers.run_plan = () => 2;
+    plan("/repo/envs");
+    await flush();
+    exitEv(2, { success: false, code: 1 });
+    await rightClickOutput();
+    expect(menuTexts().slice(-3)).toEqual(["Plan Again", "--Separator", "Copy Folder Path"]);
+    handlers.run_plan = () => 3;
+    menuAction("Plan Again");
+    await flush();
+    expect(invoked("run_plan")).toHaveLength(3);
+  });
+
+  it("reports a failed copy", async () => {
+    m.writeText.mockRejectedValue("no clipboard");
+    await bootRepo();
+    plan("/repo/envs/prod");
+    await flush();
+    await rightClickOutput();
+    menuAction("Copy Folder Path");
+    await flush();
+    expect(m.message).toHaveBeenCalledWith("no clipboard", { title: "Copy", kind: "error" });
+  });
+
+  it("manages tabs from a tab's menu", async () => {
+    let id = 1;
+    await bootRepo({ handlers: { run_plan: () => id++ } });
+    plan("/repo/envs/prod");
+    plan("/repo/envs");
+    plan("/repo/empty");
+    await flush();
+    exitEv(1);
+    exitEv(3);
+
+    const ev = rightClick(tabs()[1]);
+    await flush();
+    expect(ev.defaultPrevented).toBe(true);
+    expect(selectedTab()).toBe(1);
+    expect(menuTexts()).toEqual([
+      "Cancel Run",
+      "--Separator",
+      "Copy Folder Path",
+      "Show Folder in Files",
+      "--Separator",
+      "Close Tab",
+      "Close Other Tabs",
+    ]);
+    // Running: Cancel it first.
+    expect(item("Close Tab").enabled).toBe(false);
+    expect(item("Close Other Tabs").enabled).toBe(true);
+    m.writeText.mockResolvedValue(undefined);
+    menuAction("Copy Folder Path");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith("/repo/envs");
+    menuAction("Close Other Tabs");
+    expect(tabLabels()).toEqual(["plan · envs"]);
+
+    rightClick(tabs()[0]);
+    await flush();
+    expect(item("Close Other Tabs").enabled).toBe(false);
+    exitEv(2);
+    rightClick(tabs()[0]);
+    await flush();
+    expect(item("Close Tab").enabled).toBe(true);
+    menuAction("Close Tab");
+    expect(tabLabels()).toEqual([]);
+  });
+
+  it("shows a run's folder in the tree", async () => {
+    await bootRepo();
+    plan("/repo/envs/prod");
+    await flush();
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    rightClick(tabs()[0]);
+    await flush();
+    menuAction("Show Folder in Files");
+    await flush();
+    expect(m.showFiles).toHaveBeenCalled();
+    // Its folders open, it selected.
+    expect(treeLabels()).toEqual(["/repo", "envs", "prod", "common.tfvars", "empty", "broken", "README.md"]);
+    expect(row("prod").classList.contains("selected")).toBe(true);
+    expect(scrolled).toHaveBeenCalledWith({ block: "center" });
+  });
+
+  it("can't show a folder outside the opened one, or one that's gone", async () => {
+    let id = 1;
+    await bootRepo({ handlers: { run_plan: () => id++ } });
+    plan("/elsewhere");
+    plan("/repo/gone/away");
+    await flush();
+    rightClick(tabs()[0]);
+    await flush();
+    menuAction("Show Folder in Files");
+    await flush();
+    expect(m.showFiles).not.toHaveBeenCalled();
+
+    rightClick(tabs()[1]);
+    await flush();
+    menuAction("Show Folder in Files");
+    await flush();
+    expect(m.showFiles).toHaveBeenCalled();
+    expect(document.querySelector("#tree .tree-row.selected")).toBeNull();
+  });
+});
+
+describe("tree menu copy and open", () => {
+  it("opens a file and copies paths", async () => {
+    m.writeText.mockResolvedValue(undefined);
+    await bootRepo({ handlers: { open_file_editor: () => undefined } });
+    rightClick(row("README.md"));
+    await flush();
+    menuAction("Open");
+    await flush();
+    expect(invoked("open_file_editor")).toEqual([{ path: "/repo/README.md" }]);
+    menuAction("Copy Path");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith("/repo/README.md");
+    menuAction("Copy Relative Path");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith("README.md");
+
+    rightClick(row("/repo"));
+    await flush();
+    menuAction("Copy Relative Path");
+    await flush();
+    expect(m.writeText).toHaveBeenLastCalledWith(".");
+  });
+});
+
+describe("finding files", () => {
+  const findInput = () => byId<HTMLInputElement>("file-find-input");
+  const findType = async (s: string) => {
+    findInput().value = s;
+    findInput().dispatchEvent(new Event("input"));
+    await flush();
+  };
+  const enter = () => findInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true }));
+  const items = [
+    { rel: "envs", path: "/repo/envs", isDir: true },
+    { rel: "envs/prod", path: "/repo/envs/prod", isDir: true },
+    { rel: "envs/prod/main.tf", path: "/repo/envs/prod/main.tf", isDir: false },
+  ];
+  const finders = (extra: Record<string, Handler> = {}) => ({
+    find_files: () => ({ items, truncated: false }),
+    find_in_files: () => ({ matches: [{ rel: "envs/prod/main.tf", path: "/repo/envs/prod/main.tf", line: 4, text: "bucket" }], filesSearched: 1, truncated: false }),
+    open_file_editor: () => undefined,
+    ...extra,
+  });
+
+  it("goes to a file with ⌘P, opening it in its editor", async () => {
+    await bootRepo({ handlers: finders() });
+    expect(key("p", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(m.showFiles).toHaveBeenCalled();
+    expect(document.activeElement).toBe(findInput());
+    await findType("main");
+    expect(invoked("find_files")).toEqual([{ root: "/repo" }]);
+    enter();
+    await flush();
+    expect(invoked("open_file_editor")).toEqual([{ path: "/repo/envs/prod/main.tf" }]);
+  });
+
+  it("shows a folder in the tree", async () => {
+    await bootRepo({ handlers: finders() });
+    await findType("envs/pr");
+    enter();
+    await flush();
+    expect(byId("tree").hidden).toBe(false);
+    expect(row("prod").classList.contains("selected")).toBe(true);
+  });
+
+  it("finds text with ⇧⌘F and opens the file at the line", async () => {
+    await bootRepo({ handlers: finders() });
+    expect(key("f", { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true);
+    expect(findInput().placeholder).toBe("Find in files (⇧⌘F)");
+    await findType("bucket");
+    enter();
+    await flush();
+    expect(invoked("find_in_files")).toEqual([{ root: "/repo", query: "bucket", caseSensitive: false }]);
+    enter();
+    await flush();
+    expect(invoked("open_file_editor")).toEqual([{ path: "/repo/envs/prod/main.tf", line: 4 }]);
+  });
+
+  it("lists files again when they change or on refresh, and starts over for another folder", async () => {
+    m.open.mockResolvedValue("/other");
+    await bootRepo({ handlers: finders() });
+    await findType("main");
+    emit("workspace://changed", { structure: true });
+    await flush();
+    expect(invoked("find_files")).toHaveLength(2);
+    byId("refresh-tree").click();
+    await flush();
+    expect(invoked("find_files")).toHaveLength(3);
+    byId("open-root").click();
+    await flush();
+    expect(findInput().value).toBe("");
   });
 });

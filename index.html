@@ -50,8 +50,25 @@
           <button role="tab" data-tab="commits">Commits</button>
           <button role="tab" data-tab="files">Files</button>
         </div>
-        <div class="side-panel" data-panel="files" role="tabpanel">
-          <ul id="tree" class="tree" role="tree"></ul>
+        <div class="side-panel files-panel" data-panel="files" role="tabpanel">
+          <div class="file-find">
+            <div class="file-find-field">
+              <span class="icon" data-icon="search"></span>
+              <input id="file-find-input" type="text" spellcheck="false" autocomplete="off" />
+              <button id="file-find-case" type="button" class="find-case" title="Match case" aria-pressed="false" hidden>Aa</button>
+            </div>
+            <div class="file-find-modes" role="radiogroup" aria-label="Search by">
+              <button type="button" role="radio" data-find-mode="name" title="Go to a file or folder by name or path (⌘P)">Name or path</button>
+              <button type="button" role="radio" data-find-mode="text" title="Find text in the files (⇧⌘F)">Text in files</button>
+            </div>
+          </div>
+          <div class="file-scroll">
+            <div id="file-find-results" class="find-results" hidden>
+              <p id="file-find-status" class="find-status muted"></p>
+              <ul id="file-find-list" class="find-list" role="listbox" aria-label="Search results"></ul>
+            </div>
+            <ul id="tree" class="tree" role="tree"></ul>
+          </div>
         </div>
         <div class="side-panel" data-panel="commits" role="tabpanel" hidden>
           <div class="commits-branch" id="commits-branch"></div>
@@ -80,6 +97,7 @@
           <button id="run-apply" class="primary">Apply this plan…</button>
           <button id="run-cancel">Cancel</button>
         </div>
+        <div id="run-find" hidden></div>
         <pre id="run-output" class="output"></pre>
       </section>
     </div>

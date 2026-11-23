@@ -26,6 +26,7 @@ pub const MAX_LINE_CHARS: usize = 400;
 pub struct FileItem {
     /// Relative to the opened folder, `/`-separated.
     pub rel: String,
+    pub path: String,
     pub is_dir: bool,
 }
 
@@ -101,7 +102,7 @@ pub fn list_files(root: &Path, limit: usize) -> FileList {
             truncated = true;
             return false;
         }
-        items.push(FileItem { rel: rel(root, path), is_dir });
+        items.push(FileItem { rel: rel(root, path), path: path.to_string_lossy().into_owned(), is_dir });
         true
     });
     FileList { items, truncated }
@@ -304,9 +305,14 @@ mod tests {
             .unwrap();
         let view = webview(&app);
         let listed = ipc(&view, "find_files", serde_json::json!({ "root": root })).unwrap();
-        assert_eq!(listed["items"][0], serde_json::json!({ "rel": "main.tf", "isDir": false }));
+        assert_eq!(listed["items"][0], serde_json::json!({ "rel": "main.tf", "path": root.join("main.tf"), "isDir": false }));
         let found = ipc(&view, "find_in_files", serde_json::json!({ "root": root, "query": "BUCKET", "caseSensitive": false })).unwrap();
         assert_eq!(found["matches"][0]["line"], 1);
         assert_eq!(found["filesSearched"], 1);
+        // Arguments missing: refused before running.
+        assert!(ipc(&view, "find_files", serde_json::json!({})).is_err());
+        for args in [serde_json::json!({}), serde_json::json!({ "root": root }), serde_json::json!({ "root": root, "query": "x" })] {
+            assert!(ipc(&view, "find_in_files", args).is_err());
+        }
     }
 }

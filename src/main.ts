@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
-import { newAnsiState, renderAnsi } from "./ansi";
+import { newAnsiState, renderAnsi, stripAnsi } from "./ansi";
 import { cloudBadges, openCloudSettings, providerLogo, type OwnSettings } from "./cloudSettings";
 import { fileIcon, fileKind, icons } from "./icons";
 import { openSettings } from "./settings";
@@ -10,7 +11,9 @@ import { PLAN_EVENT, closeEditorWindows, closeFrontDialog, type PlanRequest } fr
 import { openImportDialog, type ImportRequest } from "./importDialog";
 import { initSystemColors } from "./systemColors";
 import { initWindowChrome } from "./windowChrome";
-import { initSidebar, refreshCommits, refreshUncommitted, resetCommits } from "./sidebar";
+import { initSidebar, refreshCommits, refreshUncommitted, resetCommits, showFiles } from "./sidebar";
+import { initFileFind } from "./fileFind";
+import { createTextFind } from "./textFind";
 import {
   describeClean,
   formatBytes,
@@ -273,6 +276,9 @@ function handleExit(run: Run, e: ExitEvent) {
 
 // ---- Run rendering ---------------------------------------------------------
 
+/** ⌘F: find in the shown run's output. */
+const outputFind = createTextFind($("run-find"), $("run-output"));
+
 function renderTabs() {
   const tabs = $("run-tabs");
   tabs.replaceChildren(
@@ -282,6 +288,11 @@ function renderTabs() {
         `run-tab ${r.status}` + (r.planState === "ready" ? " plan-ready" : "") + (r.id === selectedRunId ? " selected" : "");
       tab.title = r.dir;
       tab.onclick = () => selectRun(r.id);
+      tab.oncontextmenu = (e) => {
+        e.preventDefault();
+        selectRun(r.id);
+        void showTabMenu(r);
+      };
       // Middle-click closes, as in browser and editor tabs.
       tab.onauxclick = (e) => {
         if (e.button === 1 && r.status !== "running") closeRun(r);
@@ -343,6 +354,7 @@ function selectRun(id: number | null) {
   const run = id != null ? runs.get(id) : undefined;
   if (run) run.ansi = new Map();
   out.replaceChildren(...(run?.lines.map((l) => lineNode(run, l)) ?? []));
+  outputFind.refresh();
   out.scrollTop = out.scrollHeight;
   renderHeader();
   renderTabs();
@@ -361,7 +373,11 @@ listen<OutputEvent>("tofu://output", ({ payload }) => {
   if (run.id === selectedRunId) {
     const out = $("run-output");
     const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-    out.appendChild(lineNode(run, entry));
+    const node = lineNode(run, entry);
+    // A plain line is a fragment, emptied by appending it.
+    const added = node instanceof DocumentFragment ? [...node.childNodes] : [node];
+    out.appendChild(node);
+    outputFind.appended(added);
     if (atBottom) out.scrollTop = out.scrollHeight;
   }
 });
@@ -387,13 +403,16 @@ $("run-replan").onclick = () => {
   if (run) replan(run);
 };
 
-$("run-cancel").onclick = () => {
-  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
-  if (!run) return;
+function cancelRun(run: Run) {
   // Cancelling stops the folder's waiting Plan/Apply too.
   queued.delete(run.dir);
   renderHeader();
   invoke("cancel_tofu", { runId: run.id }).catch(console.error);
+}
+
+$("run-cancel").onclick = () => {
+  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
+  if (run) cancelRun(run);
 };
 
 /** Drop a run's saved plan, if it has one waiting to be applied. */
@@ -414,6 +433,87 @@ function closeRun(run: Run) {
   }
 }
 
+// ---- Copying and right-click menus ---------------------------------------------
+
+async function copyText(text: string) {
+  try {
+    await writeText(text);
+  } catch (e) {
+    await message(String(e), { title: "Copy", kind: "error" });
+  }
+}
+
+const menuItem = (text: string, action: () => void, enabled = true, accelerator?: string) =>
+  MenuItem.new({ text, action, enabled, accelerator });
+const separator = () => PredefinedMenuItem.new({ item: "Separator" });
+
+/** What's selected in the output, if the selection is there. */
+function outputSelection(): string {
+  const sel = document.getSelection()!;
+  return !sel.isCollapsed && $("run-output").contains(sel.anchorNode) ? sel.toString() : "";
+}
+
+function selectAllOutput() {
+  const range = document.createRange();
+  range.selectNodeContents($("run-output"));
+  const sel = document.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/** The run's output as plain text, without tofu's colour codes. */
+const outputText = (run: Run) => run.lines.map((l) => `${stripAnsi(l.line)}\n`).join("");
+
+/** The run's own buttons (Plan again, Apply, Cancel) as menu items, as the header shows them. */
+async function runActionItems(run: Run) {
+  const items = [];
+  if (canReplan(run)) items.push(await menuItem("Plan Again", () => replan(run)));
+  if (run.planState === "ready") items.push(await menuItem("Apply This Plan…", () => void confirmAndApply(run)));
+  if (run.status === "running" && run.kind !== "clean") items.push(await menuItem("Cancel Run", () => cancelRun(run)));
+  return items.length ? [...items, await separator()] : [];
+}
+
+/** Right-click in the output: copy, find, and the run's own actions. */
+async function showOutputMenu(run: Run) {
+  const selected = outputSelection();
+  const menu = await Menu.new({
+    items: [
+      await menuItem("Copy", () => void copyText(selected), !!selected, "CmdOrCtrl+C"),
+      await menuItem("Copy All Output", () => void copyText(outputText(run)), run.lines.length > 0),
+      await menuItem("Select All", selectAllOutput),
+      await separator(),
+      await menuItem("Find…", () => outputFind.open(), true, "CmdOrCtrl+F"),
+      await separator(),
+      ...(await runActionItems(run)),
+      await menuItem("Copy Folder Path", () => void copyText(run.dir)),
+    ],
+  });
+  await menu.popup();
+}
+
+/** Right-click on a run's tab. */
+async function showTabMenu(run: Run) {
+  const others = [...runs.values()].filter((r) => r !== run && r.status !== "running");
+  const menu = await Menu.new({
+    items: [
+      ...(await runActionItems(run)),
+      await menuItem("Copy Folder Path", () => void copyText(run.dir)),
+      await menuItem("Show Folder in Files", () => void reveal(run.dir)),
+      await separator(),
+      // A running tab can't be closed; Cancel it first.
+      await menuItem("Close Tab", () => closeRun(run), run.status !== "running"),
+      await menuItem("Close Other Tabs", () => others.forEach(closeRun), others.length > 0),
+    ],
+  });
+  await menu.popup();
+}
+
+$("run-output").addEventListener("contextmenu", (ev) => {
+  ev.preventDefault();
+  const run = selectedRunId != null ? runs.get(selectedRunId) : undefined;
+  if (run) void showOutputMenu(run);
+});
+
 // ---- Folder tree -------------------------------------------------------------
 
 let currentRoot: string | null = null;
@@ -423,9 +523,9 @@ let cloudFolders: Record<string, OwnSettings> = {};
 /** Saving sends `cloud://changed` to every window, which refreshes what shows settings. */
 const editCloud = (dir: string) => void openCloudSettings(dir, relName(dir), relName);
 
-async function openFileEditor(path: string) {
+async function openFileEditor(path: string, line?: number) {
   try {
-    await invoke("open_file_editor", { path });
+    await invoke("open_file_editor", { path, line });
   } catch (e) {
     await message(String(e), { title: "Can't open file", kind: "error" });
   }
@@ -484,6 +584,7 @@ async function trashEntry(entry: DirEntry) {
  */
 async function showContextMenu(dir: string, isModule: boolean, entry: DirEntry) {
   const item = (text: string, action: () => void) => MenuItem.new({ text, action });
+  const openItems = entry.isDir ? [] : [await item("Open", () => void openFileEditor(entry.path)), await separator()];
   const tofuItems = isModule
     ? [
         await item("Import…", () => void startImport(dir)),
@@ -499,8 +600,10 @@ async function showContextMenu(dir: string, isModule: boolean, entry: DirEntry) 
     entry.path === currentRoot
       ? []
       : [await PredefinedMenuItem.new({ item: "Separator" }), await item(`Move "${entry.name}" to Trash…`, () => void trashEntry(entry))];
+  const rel = entry.path === currentRoot ? "." : relName(entry.path);
   const menu = await Menu.new({
     items: [
+      ...openItems,
       ...tofuItems,
       // Any folder below the opened one: parent folders hold shared settings
       // for the modules below, but an account on the whole tree would reach
@@ -508,6 +611,9 @@ async function showContextMenu(dir: string, isModule: boolean, entry: DirEntry) 
       ...(dir === currentRoot ? [] : [await item("Cloud Settings…", () => editCloud(dir))]),
       // Any folder: this folder and everything below it.
       await item("Clean .terraform Caches…", () => void cleanCaches(dir)),
+      await separator(),
+      await item("Copy Path", () => void copyText(entry.path)),
+      await item("Copy Relative Path", () => void copyText(rel)),
       ...trashItems,
     ],
   });
@@ -715,6 +821,26 @@ async function renderTree() {
   }
 }
 
+const parentDir = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
+
+/** Show `path` (in the opened folder) in the tree: its folders open, it selected. */
+async function reveal(path: string) {
+  const root = currentRoot;
+  if (!root || !path.startsWith(root)) return;
+  showFiles();
+  for (let p = parentDir(path); p.length >= root.length; p = parentDir(p)) expanded.add(p);
+  selectedPath = path;
+  await renderTree();
+  document.querySelector("#tree .tree-row.selected")?.scrollIntoView({ block: "center" });
+}
+
+const fileFind = initFileFind({
+  root: () => currentRoot,
+  open: (path, line) => void openFileEditor(path, line),
+  reveal: (path) => void reveal(path),
+  showFiles,
+});
+
 async function loadRoot(path: string) {
   currentRoot = path;
   try {
@@ -730,6 +856,7 @@ async function loadRoot(path: string) {
   expanded.clear();
   expanded.add(path); // start with the root expanded
   selectedPath = null;
+  fileFind.reset();
   await renderTree();
   void resetCommits(path);
   renderTabs();
@@ -747,7 +874,10 @@ interface WorkspaceChanges {
 // says what kind of thing changed; refresh only the affected views.
 listen<WorkspaceChanges>("workspace://changed", ({ payload: c }) => {
   if (!currentRoot) return;
-  if (c.structure) void renderTree();
+  if (c.structure) {
+    void renderTree();
+    fileFind.invalidate();
+  }
   // New commits/branch, or folders appearing/disappearing (commit rows only
   // list folders that match the local checkout): reload the whole list.
   if (c.gitRefs || c.folders) void refreshCommits();
@@ -756,6 +886,7 @@ listen<WorkspaceChanges>("workspace://changed", ({ payload: c }) => {
 
 function refreshAll() {
   void renderTree();
+  fileFind.invalidate();
   void refreshCommits();
 }
 
@@ -797,6 +928,24 @@ document.addEventListener("keydown", (ev) => {
     ev.preventDefault();
     void pickRoot();
   }
+});
+
+// ⌘F finds in the run's output (⌘G / ⇧⌘G step through it), ⇧⌘F finds in
+// files and ⌘P goes to a file.
+document.addEventListener("keydown", (ev) => {
+  if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || $("workspace").hidden) return;
+  const key = ev.key.toLowerCase();
+  if (key === "f") {
+    if (ev.shiftKey) fileFind.focus("text");
+    else outputFind.open();
+  } else if (key === "p" && !ev.shiftKey) {
+    fileFind.focus("name");
+  } else if (key === "g" && outputFind.isOpen()) {
+    outputFind.step(!ev.shiftKey);
+  } else {
+    return;
+  }
+  ev.preventDefault();
 });
 
 // Suppress the webview's default context menu everywhere except text inputs.

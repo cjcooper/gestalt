@@ -20,3 +20,5 @@ if (!Range.prototype.getClientRects) {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
   Range.prototype.getBoundingClientRect = () => new DOMRect();
 }
+// Nothing scrolls in jsdom.
+if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = function () {};

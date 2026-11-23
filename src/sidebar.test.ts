@@ -225,6 +225,17 @@ describe("tabs", () => {
     expect(panel("commits").hidden).toBe(false);
   });
 
+  it("switches to Files on request, and keeps it across refreshes", async () => {
+    await setup();
+    await openFolder();
+    expect(panel("commits").hidden).toBe(false);
+    sb.showFiles();
+    expect(panel("files").hidden).toBe(false);
+    expect(tab("files").classList.contains("active")).toBe(true);
+    await sb.refreshCommits();
+    expect(panel("files").hidden).toBe(false);
+  });
+
   it("falls back to Files when the folder isn't a repo (or the check fails)", async () => {
     await setup({ git_is_repo: () => false });
     await openFolder();

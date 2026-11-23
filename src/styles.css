@@ -670,6 +670,183 @@ body.resizing {
   color: var(--accent);
 }
 
+/* ---- Find (run output and Files tab) ---- */
+
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.find-bar .find-icon,
+.file-find-field > .icon {
+  color: var(--muted);
+}
+.find-input,
+#file-find-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  outline: none;
+}
+.find-input:focus,
+#file-find-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.find-bar .find-input {
+  flex: 0 1 280px;
+}
+.find-count {
+  min-width: 64px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.find-count.none {
+  color: var(--bad);
+}
+.find-case {
+  padding: 1px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.find-case[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--selected);
+}
+button.icon-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+}
+button.icon-only:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+mark.find-hit,
+.find-list mark {
+  background: color-mix(in srgb, var(--warn) 30%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+mark.find-hit.current {
+  background: color-mix(in srgb, var(--warn) 75%, transparent);
+  outline: 1px solid var(--warn);
+}
+
+.files-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+.file-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 0;
+}
+.file-find {
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.file-find-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.file-find-modes {
+  display: flex;
+  gap: 2px;
+  margin-top: 5px;
+}
+.file-find-modes button {
+  flex: 1;
+  padding: 1px 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: none;
+  border-color: transparent;
+}
+.file-find-modes button[aria-checked="true"] {
+  color: var(--fg);
+  background: var(--selected);
+  border-color: var(--border);
+}
+.find-status {
+  margin: 0;
+  padding: 0 12px 6px;
+  font-size: 11.5px;
+}
+.find-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.find-row,
+.find-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 12px;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+.find-row:hover {
+  background: var(--bg-alt);
+}
+.find-row.selected {
+  background: var(--selected);
+}
+.find-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.find-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.find-file {
+  margin-top: 6px;
+  font-weight: 600;
+}
+.find-file .find-count {
+  min-width: 0;
+  margin-left: auto;
+  font-weight: normal;
+}
+.find-line {
+  padding-left: 34px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+.find-line-no {
+  flex: none;
+  min-width: 2.5em;
+  text-align: right;
+  color: var(--muted);
+}
+.find-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* tofu's own colours (see ansi.ts). */
 .output .ansi-bold {
   font-weight: 600;

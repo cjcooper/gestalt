@@ -477,6 +477,12 @@ async function updateRepoAvailability() {
   showTab(wantedTab);
 }
 
+/** Switch to the Files tab (Go to File, Find in Files, revealing a path). */
+export function showFiles() {
+  wantedTab = "files";
+  showTab("files");
+}
+
 /** A different folder was opened: forget the previous repo's list. */
 export async function resetCommits(folder: string) {
   root = folder;
