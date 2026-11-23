@@ -5,7 +5,7 @@
 use crate::cloud::{self, CloudSettings};
 use crate::shell_env::ShellEnv;
 use crate::windows::{self, Windows};
-use crate::{clean, editor_window, file_edit, file_icon, git, initial_root, list_dir, open_root, os_trash, reload_shell_env, shell_env_status, system_colors, tofu, watch};
+use crate::{clean, editor_window, file_edit, file_icon, git, initial_root, list_dir, open_root, os_trash, reload_shell_env, search, shell_env_status, system_colors, tofu, watch};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -106,6 +106,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(windows::second_instance))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(tofu::Runs::default())
         .manage(ShellEnv::default())
         .manage(Windows::default())
@@ -173,6 +174,8 @@ pub fn run() {
             file_edit::file_save,
             editor_window::open_file_editor,
             os_trash::move_to_trash,
+            search::find_files,
+            search::find_in_files,
             git::git_log,
             git::git_is_repo,
             git::git_uncommitted,

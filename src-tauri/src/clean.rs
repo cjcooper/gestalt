@@ -99,7 +99,7 @@ fn require_dir(dir: &str) -> Result<PathBuf, String> {
 }
 
 /// Disk work off the async runtime.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())
 }
 

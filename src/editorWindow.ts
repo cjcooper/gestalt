@@ -7,11 +7,11 @@ import { initSystemColors } from "./systemColors";
 declare global {
   interface Window {
     /** The file, and the label of the workspace window it was opened from. */
-    __GESTALT_EDITOR__?: { path: string; owner?: string };
+    __GESTALT_EDITOR__?: { path: string; owner?: string; line?: number | null };
   }
 }
 
 document.documentElement.dataset.platform = navigator.userAgent.includes("Mac") ? "mac" : "other";
 initSystemColors();
 const target = window.__GESTALT_EDITOR__;
-if (target) void mountFileEditor(document.body, target.path, target.owner);
+if (target) void mountFileEditor(document.body, target.path, target.owner, target.line ?? undefined);

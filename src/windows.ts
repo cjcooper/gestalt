@@ -13,6 +13,8 @@ export const CLOSE_EVENT = "editor://close";
 export const closedEvent = (label: string) => `editor://closed/${label}`;
 /** Editor → workspace window: run a plan in a folder. */
 export const PLAN_EVENT = "editor://plan";
+/** Workspace window → editor: show this line (1-based), from Find in Files (src-tauri/src/editor_window.rs). */
+export const GOTO_EVENT = "editor://goto";
 export interface PlanRequest {
   dir: string;
 }

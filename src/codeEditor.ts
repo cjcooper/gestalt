@@ -84,6 +84,8 @@ export interface CodeEditor {
   /** Settles once the file's language is loaded and applied (or failed to load). */
   ready: Promise<void>;
   getValue(): string;
+  /** Select line `n` (1-based, clamped to the file) and scroll it to the middle. */
+  gotoLine(n: number): void;
   focus(): void;
   destroy(): void;
 }
@@ -132,6 +134,14 @@ export function createCodeEditor(parent: HTMLElement, o: CodeEditorOptions): Cod
     view,
     ready,
     getValue: () => view.state.doc.toString(),
+    gotoLine: (n) => {
+      const doc = view.state.doc;
+      const line = doc.line(Math.min(Math.max(1, Math.floor(n)), doc.lines));
+      view.dispatch({
+        selection: { anchor: line.from, head: line.to },
+        effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+      });
+    },
     focus: () => view.focus(),
     destroy: () => {
       destroyed = true;

@@ -5,7 +5,7 @@
 
 use crate::file_edit;
 use crate::windows::{self, Windows};
-use tauri::{AppHandle, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, Webview};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, Webview};
 
 /// Editor window labels start with this (`capabilities/editor.json` matches
 /// it), then the workspace window's label: `editor-<owner>-<hash>`.
@@ -26,10 +26,19 @@ pub fn owner(label: &str) -> Option<&str> {
     (hash.len() == 16 && windows::is_workspace(owner)).then_some(owner)
 }
 
+/// Sent to an open editor window to show a line (1-based), e.g. a Find in Files result.
+pub const GOTO_EVENT: &str = "editor://goto";
+
 /// Open `path` (a file inside the calling window's folder) in its own editor
-/// window, or bring its window to the front if it's already open.
+/// window, or bring its window to the front if it's already open. With
+/// `line`, the editor shows and selects that line.
 #[tauri::command]
-pub fn open_file_editor<R: Runtime>(webview: Webview<R>, windows: State<'_, Windows>, path: String) -> Result<(), String> {
+pub fn open_file_editor<R: Runtime>(
+    webview: Webview<R>,
+    windows: State<'_, Windows>,
+    path: String,
+    line: Option<usize>,
+) -> Result<(), String> {
     let app = webview.app_handle();
     let owner = owner(webview.label()).unwrap_or(webview.label()).to_string();
     // One window per place in the tree: two links to the same file are two
@@ -39,13 +48,16 @@ pub fn open_file_editor<R: Runtime>(webview: Webview<R>, windows: State<'_, Wind
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.unminimize();
         let _ = window.set_focus();
+        if let Some(line) = line {
+            let _ = window.emit_to(label.as_str(), GOTO_EVENT, line);
+        }
         return Ok(());
     }
     let title = file.rel.display().to_string();
     // The page reads which file to edit from here (src/editorWindow.ts): the
     // path as the tree spells it, so Plan runs in the folder the file appears
     // in (not where a link points) and names it as the tree does.
-    let init = format!("window.__GESTALT_EDITOR__ = {};", serde_json::json!({ "path": file.shown, "owner": owner }));
+    let init = format!("window.__GESTALT_EDITOR__ = {};", serde_json::json!({ "path": file.shown, "owner": owner, "line": line }));
     create_window(app, &label, &title, init)
 }
 
@@ -64,6 +76,7 @@ fn create_window<R: Runtime>(app: &AppHandle<R>, label: &str, title: &str, init:
 mod tests {
     use super::*;
     use crate::shell_env::testing::temp_dir;
+    use tauri::Listener;
 
     #[test]
     fn labels_are_stable_distinct_and_valid() {
@@ -94,7 +107,7 @@ mod tests {
         app.manage(Windows::default());
         app.state::<Windows>().set_root("main", &root);
         let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
-        let open_from = |w: &tauri::Webview<_>, p: &std::path::Path| open_file_editor(w.clone(), app.state(), p.to_string_lossy().into());
+        let open_from = |w: &tauri::Webview<_>, p: &std::path::Path| open_file_editor(w.clone(), app.state(), p.to_string_lossy().into(), None);
         let open = |p: &std::path::Path| open_from(main.as_ref(), p);
 
         let file = root.join("mod/main.tf");
@@ -105,12 +118,22 @@ mod tests {
         open(&root.join("mod/../mod/main.tf")).unwrap();
         open_from(editor.as_ref(), &file).unwrap();
         assert_eq!(app.webview_windows().len(), 2);
+        // At a line: the open window is told to show it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        editor.listen(GOTO_EVENT, move |e| tx.send(e.payload().to_string()).unwrap());
+        open_file_editor(main.as_ref().clone(), app.state(), file.to_string_lossy().into(), Some(12)).unwrap();
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), "12");
+        // A new window starts at the line.
+        let other = root.join("mod/other.tf");
+        std::fs::write(&other, "").unwrap();
+        open_file_editor(main.as_ref().clone(), app.state(), other.to_string_lossy().into(), Some(3)).unwrap();
+        assert_eq!(app.webview_windows().len(), 3);
 
         // Two links to the same file are two windows: each plans in its own folder.
         std::fs::create_dir_all(root.join("other")).unwrap();
         std::os::unix::fs::symlink(&file, root.join("other/main.tf")).unwrap();
         open(&root.join("other/main.tf")).unwrap();
-        assert_eq!(app.webview_windows().len(), 3);
+        assert_eq!(app.webview_windows().len(), 4);
 
         // A window without a folder open can't open files.
         let other = tauri::WebviewWindowBuilder::new(&app, "workspace-1", Default::default()).build().unwrap();

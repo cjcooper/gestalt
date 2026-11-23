@@ -9,6 +9,7 @@ mod git;
 mod module_info;
 mod order;
 mod os_trash;
+mod search;
 mod shell_env;
 mod system_colors;
 mod tofu;

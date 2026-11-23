@@ -25,7 +25,7 @@ fn is_hidden(name: &str, is_dir: bool) -> bool {
 }
 
 /// Visible entries of `dir` as (name, path, is_dir).
-fn visible(dir: &Path) -> impl Iterator<Item = (String, std::path::PathBuf, bool)> {
+pub(crate) fn visible(dir: &Path) -> impl Iterator<Item = (String, std::path::PathBuf, bool)> {
     std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| {
         // Follow symlinks so linked folders/files show as what they point to.
         let is_dir = std::fs::metadata(e.path()).map(|m| m.is_dir()).ok()?;

@@ -17,8 +17,14 @@ describe("editor window entry", () => {
     window.__GESTALT_EDITOR__ = { path: "/repo/main.tf", owner: "workspace-2" };
     await import("./editorWindow");
     expect(m.initSystemColors).toHaveBeenCalled();
-    expect(m.mountFileEditor).toHaveBeenCalledWith(document.body, "/repo/main.tf", "workspace-2");
+    expect(m.mountFileEditor).toHaveBeenCalledWith(document.body, "/repo/main.tf", "workspace-2", undefined);
     expect(document.documentElement.dataset.platform).toBe("other");
+  });
+
+  it("starts at the line the backend named", async () => {
+    window.__GESTALT_EDITOR__ = { path: "/repo/main.tf", owner: "main", line: 7 };
+    await import("./editorWindow");
+    expect(m.mountFileEditor).toHaveBeenCalledWith(document.body, "/repo/main.tf", "main", 7);
   });
 
   it("does nothing without one, and knows macOS", async () => {

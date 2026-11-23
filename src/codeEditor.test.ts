@@ -83,6 +83,21 @@ describe("createCodeEditor", () => {
     expect(parent.querySelector(".cm-editor")).toBeNull();
   });
 
+  it("goes to a line, selecting it, clamped to the file", () => {
+    const { editor } = make("a.txt", "one\ntwo\nthree");
+    const selected = () => {
+      const { from, to } = editor.view.state.selection.main;
+      return editor.view.state.sliceDoc(from, to);
+    };
+    editor.gotoLine(2);
+    expect(selected()).toBe("two");
+    editor.gotoLine(99);
+    expect(selected()).toBe("three");
+    editor.gotoLine(0);
+    expect(selected()).toBe("one");
+    editor.destroy();
+  });
+
   it("works for plain text", async () => {
     const { editor } = make("LICENSE", "text");
     await editor.ready;

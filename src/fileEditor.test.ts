@@ -50,9 +50,9 @@ const status = () => q(".file-status");
 const error = () => q(".notice");
 const saveBtn = () => q<HTMLButtonElement>("[data-action=save]");
 
-async function mount(h: Handlers = {}, path = PATH, owner?: string) {
+async function mount(h: Handlers = {}, path = PATH, owner?: string, line?: number) {
   route(h);
-  await mountFileEditor(document.body, path, owner);
+  await mountFileEditor(document.body, path, owner, line);
 }
 
 function type(s: string) {
@@ -431,6 +431,29 @@ describe("mountFileEditor", () => {
       plan().click();
       await flush();
       expect(tauri.emitTo).toHaveBeenCalledWith("workspace-3", "editor://plan", { dir: "/repo/envs/prod" });
+    });
+  });
+
+  describe("going to a line", () => {
+    const lines = { file_read: () => ({ relPath: "main.tf", content: "a = 1\nb = 2\nc = 3\n", isModule: false, linkTarget: null }) };
+    const selected = () => {
+      const { from, to } = view().state.selection.main;
+      return view().state.sliceDoc(from, to);
+    };
+
+    it("opens at the line it was asked for", async () => {
+      await mount(lines, PATH, undefined, 2);
+      expect(selected()).toBe("b = 2");
+    });
+
+    it("goes to another line when the workspace window asks again", async () => {
+      await mount(lines);
+      expect(selected()).toBe("");
+      const [event, handler] = tauri.win.listen.mock.calls[1] as [string, (e: { payload: number }) => void];
+      expect(event).toBe("editor://goto");
+      handler({ payload: 3 });
+      expect(selected()).toBe("c = 3");
+      expect(document.activeElement).toBe(view().contentDOM);
     });
   });
 

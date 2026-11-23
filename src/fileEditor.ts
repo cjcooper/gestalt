@@ -20,7 +20,7 @@ import { ask, message } from "@tauri-apps/plugin-dialog";
 import { createCodeEditor, languageFor } from "./codeEditor";
 import { icons } from "./icons";
 import { getSettings } from "./settings";
-import { CLOSE_EVENT, PLAN_EVENT, closedEvent, type PlanRequest } from "./windows";
+import { CLOSE_EVENT, GOTO_EVENT, PLAN_EVENT, closedEvent, type PlanRequest } from "./windows";
 
 interface FileContent {
   relPath: string;
@@ -34,8 +34,8 @@ interface FileContent {
 /** The backend's stale-write refusal (file_edit.rs). */
 const isConflict = (e: unknown) => String(e).includes("changed on disk since you opened it");
 
-/** Fill `root` (the window's body) with an editor for `path`. */
-export async function mountFileEditor(root: HTMLElement, path: string, owner = "main"): Promise<void> {
+/** Fill `root` (the window's body) with an editor for `path`, showing `line` if given. */
+export async function mountFileEditor(root: HTMLElement, path: string, owner = "main", line?: number): Promise<void> {
   const win = getCurrentWindow();
   let file: FileContent;
   try {
@@ -221,6 +221,13 @@ export async function mountFileEditor(root: HTMLElement, path: string, owner = "
   // Switching to another window or app counts as clicking away.
   window.addEventListener("blur", autoSave);
 
+  // A Find in Files result for this file, opened again from the workspace window.
+  await win.listen<number>(GOTO_EVENT, ({ payload }) => {
+    editor.gotoLine(payload);
+    editor.focus();
+  });
+
   render();
+  if (line) editor.gotoLine(line);
   editor.focus();
 }
