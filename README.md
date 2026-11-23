@@ -25,6 +25,26 @@ opened it, unless you choose to overwrite. For a file in a module folder
 (one with a `main.tf`), **Plan** in the editor's bar saves the file and plans
 in the window it was opened from, which comes forward to show the output.
 
+### Finding things
+
+- **In a run's output**: ⌘F opens a find bar above the output. Matches are
+  highlighted (new output too, as it arrives); ⏎ / ⇧⏎ or ⌘G / ⇧⌘G step
+  through them, **Aa** matches case, Esc closes.
+- **Files by name or path**: ⌘P (or the field at the top of the Files tab).
+  Type part of a name, or a path from the opened folder such as
+  `envs/prod/`; the folder's contents list first. Tab completes the chosen
+  path a folder at a time, ↑ / ↓ choose, ⏎ opens a file in its editor or
+  shows a folder in the tree.
+- **Text in files**: ⇧⌘F, or **Text in files** under the field. Lines are
+  listed by file; ⏎ or a click opens the file at that line. Dotfiles,
+  `.terraform`, `node_modules`, binary files and files over 2 MB are skipped.
+
+Right-click the output to copy the selection or all of it (without colour
+codes), select all, find, or run the tab's own actions (Plan again, Apply,
+Cancel). Right-click a run's tab to copy its folder's path, show the folder
+in the tree, or close it or the other tabs. The tree's menu has **Copy
+Path** and **Copy Relative Path**, and **Open** for files.
+
 Symlinks show a link icon in the tree. A linked file (say a shared
 `providers.tf` linked into many modules) opens with a warning bar naming the
 real file: changes there affect every place that links to it. It still
