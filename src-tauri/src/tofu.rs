@@ -122,6 +122,37 @@ impl Runs {
     pub fn active_dirs(&self) -> Vec<PathBuf> {
         self.active.lock().unwrap().values().map(|r| r.dir.clone()).collect()
     }
+
+    /// Interrupt every run, as cancelling each would (the app is quitting).
+    pub fn interrupt_all(&self) {
+        self.active.lock().unwrap().values_mut().for_each(interrupt);
+    }
+
+    /// Wait up to `timeout` for every run to finish; whether they all did.
+    pub fn wait_idle(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.active.lock().unwrap().is_empty() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+/// What to ask before quitting while tofu runs in `dirs`; `None` if nothing runs.
+pub fn quit_prompt(dirs: &[PathBuf]) -> Option<String> {
+    let mut dirs: Vec<_> = dirs.iter().map(|d| format!("  {}", d.display())).collect();
+    dirs.sort();
+    let runs = match dirs.len() {
+        0 => return None,
+        1 => "A tofu run is".to_string(),
+        n => format!("{n} tofu runs are"),
+    };
+    Some(format!("{runs} still running in:\n{}\n\nQuitting cancels {}.", dirs.join("\n"), if dirs.len() > 1 { "them" } else { "it" }))
 }
 
 /// Look up a variable in the resolved env, falling back to our own process env.
@@ -1110,6 +1141,33 @@ while :; do sleep 30 >/dev/null 2>&1 & wait; done
         assert_eq!((&ev["cancelled"], &ev["code"]), (&json!(true), &json!(130)));
         assert!(!mine.exists());
         assert!(fx.runs().plans.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn quitting_interrupts_every_run_and_waits_for_them() {
+        let fx = fixture("quit", &["FAKE_plan=graceful"]);
+        assert!(fx.runs().wait_idle(Duration::ZERO));
+        let id = run_plan(fx.handle(), fx.runs(), fx.dir_arg());
+        fx.wait_running(id);
+        assert!(!fx.runs().wait_idle(Duration::from_millis(60)));
+
+        fx.runs().interrupt_all();
+        assert!(fx.runs().wait_idle(Duration::from_secs(20)));
+        let ev = fx.wait_exit(id).1;
+        assert_eq!((&ev["cancelled"], &ev["code"]), (&json!(true), &json!(130)));
+    }
+
+    #[test]
+    fn quit_prompt_names_the_running_folders() {
+        assert_eq!(quit_prompt(&[]), None);
+        assert_eq!(
+            quit_prompt(&[PathBuf::from("/infra/dev")]).unwrap(),
+            "A tofu run is still running in:\n  /infra/dev\n\nQuitting cancels it."
+        );
+        assert_eq!(
+            quit_prompt(&[PathBuf::from("/infra/prod"), PathBuf::from("/infra/dev")]).unwrap(),
+            "2 tofu runs are still running in:\n  /infra/dev\n  /infra/prod\n\nQuitting cancels them."
+        );
     }
 
     #[test]

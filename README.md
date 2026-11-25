@@ -51,6 +51,9 @@ real file: changes there affect every place that links to it. It still
 belongs to the folder you opened it from, so Plan runs there.
 Closing a window closes the editor windows opened from it first.
 
+Closing a window or quitting (⌘Q) while tofu is running asks first; going
+ahead cancels the runs, and quitting gives tofu a few seconds to stop cleanly.
+
 ## Development
 
 ```sh

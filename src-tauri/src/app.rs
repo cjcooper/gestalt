@@ -7,7 +7,10 @@ use crate::shell_env::ShellEnv;
 use crate::windows::{self, Windows};
 use crate::{clean, editor_window, file_edit, file_icon, git, initial_root, list_dir, open_root, os_trash, reload_shell_env, search, shell_env_status, system_colors, tofu, watch};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 /// The platform's standard menu plus a Workspace menu. Workspace items other
 /// than New Window are handled in the UI of the window in front, which hears
@@ -19,6 +22,9 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Windo
 ///
 /// The standard Close Window items (⌘W) are swapped for one that closes the
 /// front in-app window (a file editor or dialog) first, see [`close_front`].
+///
+/// The standard Quit item (⌘Q) is swapped for one that asks first while tofu
+/// runs, see [`quit`]: the standard one ends the app without telling it.
 fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::default(app)?;
     let about = MenuItem::with_id(app, ABOUT_ID, "About Gestalt", true, None::<&str>)?;
@@ -26,6 +32,7 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     // The same shortcut can only be on one item: the first (File) gets it.
     let close_more = MenuItem::with_id(app, CLOSE_ID, "Close", true, None::<&str>)?;
     let mut closes = [&close, &close_more].into_iter();
+    let mut quit = None;
     for sub in menu.items()?.iter().filter_map(|i| i.as_submenu()) {
         for (at, item) in sub.items()?.iter().enumerate() {
             let text = item.as_predefined_menuitem().and_then(|p| p.text().ok()).unwrap_or_default();
@@ -33,6 +40,9 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 Some(&about)
             } else if text.starts_with("Close") {
                 closes.next()
+            } else if ["Quit", "Exit"].iter().any(|q| text.trim_start_matches('&').starts_with(q)) {
+                let label = text.replace('&', "");
+                Some(&*quit.insert(MenuItem::with_id(app, QUIT_ID, label, true, Some("CmdOrCtrl+Q"))?))
             } else {
                 None
             };
@@ -67,6 +77,38 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 const ABOUT_ID: &str = "about";
 const NEW_WINDOW_ID: &str = "new-window";
 const CLOSE_ID: &str = "close";
+const QUIT_ID: &str = "quit";
+
+/// Set once the user has agreed to quit, while runs wind down.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// ⌘Q: quit, but while tofu runs ask first. Agreeing interrupts the runs (as
+/// cancelling them would) and waits a little for tofu to stop cleanly, so it
+/// doesn't leave state locked; quitting again meanwhile doesn't wait.
+fn quit(app: &AppHandle) {
+    let runs = app.state::<tofu::Runs>();
+    let prompt = tofu::quit_prompt(&runs.active_dirs());
+    let Some(prompt) = prompt.filter(|_| !QUITTING.load(Ordering::SeqCst)) else {
+        return app.exit(0);
+    };
+    let app = app.clone();
+    app.dialog()
+        .message(prompt)
+        .title("Quit Gestalt")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Cancel runs and quit".into(), "Keep running".into()))
+        .show(move |ok| {
+            if !ok {
+                return;
+            }
+            QUITTING.store(true, Ordering::SeqCst);
+            app.state::<tofu::Runs>().interrupt_all();
+            std::thread::spawn(move || {
+                app.state::<tofu::Runs>().wait_idle(Duration::from_secs(10));
+                app.exit(0);
+            });
+        });
+}
 
 /// ⌘W: a secondary window (About, a file editor) is asked to close; an editor
 /// saves or confirms first. A workspace window is asked to close its front
@@ -129,6 +171,7 @@ pub fn run() {
             }
             NEW_WINDOW_ID => windows::open_folders(app, Vec::new()),
             CLOSE_ID => close_front(app),
+            QUIT_ID => quit(app),
             ABOUT_ID => {
                 if let Err(e) = show_about(app) {
                     eprintln!("about window: {e}");
