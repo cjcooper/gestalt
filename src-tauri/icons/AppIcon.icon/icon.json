@@ -67,6 +67,31 @@
     {
       "layers": [
         {
+          "name": "hat",
+          "image-name-specializations": [
+            {
+              "value": "hat-light.svg"
+            },
+            {
+              "appearance": "dark",
+              "value": "hat-dark.svg"
+            }
+          ],
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.4
+      }
+    },
+    {
+      "layers": [
+        {
           "name": "block",
           "image-name-specializations": [
             {
@@ -75,6 +100,31 @@
             {
               "appearance": "dark",
               "value": "block-dark.svg"
+            }
+          ],
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.4
+      }
+    },
+    {
+      "layers": [
+        {
+          "name": "snow",
+          "image-name-specializations": [
+            {
+              "value": "snow-light.svg"
+            },
+            {
+              "appearance": "dark",
+              "value": "snow-dark.svg"
             }
           ],
           "glass": true

@@ -195,6 +195,114 @@ button.big {
   font-size: 12px;
 }
 
+/* ---- Christmas (christmas.ts) ----
+   On whenever data-christmas is set: lights along the toolbar, a Santa hat
+   on the window title, and snow and a countdown on the welcome panel. Motion
+   stops under reduced motion. */
+
+.snow,
+.welcome-greeting {
+  display: none;
+}
+:root[data-christmas] .welcome {
+  position: relative;
+  overflow: hidden;
+}
+:root[data-christmas] .welcome-card {
+  position: relative;
+}
+:root[data-christmas] .welcome-greeting {
+  display: block;
+  font-weight: 600;
+  color: var(--christmas-red);
+}
+/* Four layers of soft flakes, each drifting down at its own pace. */
+:root[data-christmas] .snow {
+  display: block;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  --flake: color-mix(in srgb, var(--snow) 75%, transparent);
+  background-image:
+    radial-gradient(circle 3.5px at 24px 34px, var(--flake) 55%, transparent),
+    radial-gradient(circle 2.5px at 92px 108px, var(--flake) 55%, transparent),
+    radial-gradient(circle 4px at 156px 62px, var(--flake) 55%, transparent),
+    radial-gradient(circle 3px at 60px 150px, var(--flake) 55%, transparent);
+  background-size: 190px 180px, 130px 140px, 240px 220px, 110px 170px;
+  animation: snowfall 22s linear infinite;
+}
+@keyframes snowfall {
+  from {
+    background-position: 0 0, 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 38px 360px, -26px 420px, 48px 440px, -22px 510px;
+  }
+}
+:root[data-christmas] {
+  --christmas-red: #c4262e;
+  --snow: #9fbad6;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-christmas] {
+    --christmas-red: #ff6b72;
+    --snow: #ffffff;
+  }
+}
+
+/* A string of red, green and gold lights along the bottom of the toolbar. */
+:root[data-christmas] .toolbar {
+  position: relative;
+}
+:root[data-christmas] .toolbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 8px;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle 3px at 9px 50%, #e5383b 98%, transparent) 0 0 / 54px 100% repeat-x,
+    radial-gradient(circle 3px at 27px 50%, #2fb36b 98%, transparent) 0 0 / 54px 100% repeat-x,
+    radial-gradient(circle 3px at 45px 50%, #f4b400 98%, transparent) 0 0 / 54px 100% repeat-x;
+  animation: twinkle 3s ease-in-out infinite alternate;
+}
+@keyframes twinkle {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* A Santa hat on the window title (the page's own title bar, on macOS). */
+:root[data-christmas] .window-title {
+  position: relative;
+  padding-left: 16px;
+}
+:root[data-christmas] .window-title::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  width: 14px;
+  height: 12px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 32'><path d='M5 25C6 13 13 4 23 3c6 0 10 3 12 9-3-3-7-4-10-2 1 5 2 10 2 15z' fill='%23d62b33'/><rect x='2' y='22' width='28' height='8' rx='4' fill='%23fff' stroke='%23000' stroke-opacity='.15'/><circle cx='35' cy='13' r='4.5' fill='%23fff' stroke='%23000' stroke-opacity='.15'/></svg>")
+    no-repeat center / contain;
+  transform: rotate(-18deg);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-christmas] .snow,
+  :root[data-christmas] .toolbar::after {
+    animation: none;
+  }
+}
+
 .muted {
   color: var(--muted);
 }

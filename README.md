@@ -54,6 +54,14 @@ Closing a window closes the editor windows opened from it first.
 Closing a window or quitting (⌘Q) while tofu is running asks first; going
 ahead cancels the runs, and quitting gives tofu a few seconds to stop cleanly.
 
+### Christmas
+
+This build is dressed for Christmas, whatever the date, as are Paddock, Hot
+Mess and Subduer; a later release takes it out. The tofu wears a Santa hat
+in the app icon, lights run along the toolbar, the window title gets a hat,
+and snow falls on the welcome screen as it counts the sleeps until
+Christmas. Snow and lights stand still under Reduce motion.
+
 ## Development
 
 ```sh
@@ -78,6 +86,13 @@ files for that reason: `main.rs`, `app.rs` (the Tauri builder),
 `system_colors/mac.rs` (AppKit calls), `os_trash.rs` (the system Trash call;
 what may be deleted is checked in `delete.rs`) and `src/probes/` (manual `#[ignore]`
 checks against real repos). New logic belongs elsewhere, under test.
+
+To install a build on macOS, run `scripts/install-mac.sh` from the repo root
+(or pass the path of a `.app`). Copying over the old app with `ditto` or `cp`
+often leaves Finder and the Dock showing the old icon. The script swaps the
+new bundle in and re-registers it with LaunchServices. If Gestalt is kept in
+the Dock, it also restarts the Dock. It quits and reopens Gestalt if it was
+running, and uses `sudo` only when `/Applications` isn't writable by you.
 
 ### Code signing (macOS)
 
