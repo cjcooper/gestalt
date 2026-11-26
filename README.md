@@ -51,6 +51,14 @@ real file: changes there affect every place that links to it. It still
 belongs to the folder you opened it from, so Plan runs there.
 Closing a window closes the editor windows opened from it first.
 
+### Christmas
+
+This build is dressed for Christmas, whatever the date, as are Paddock, Hot
+Mess and Subduer; a later release takes it out. The tofu wears a Santa hat
+in the app icon, lights run along the toolbar, the window title gets a hat,
+and snow falls on the welcome screen as it counts the sleeps until
+Christmas. Snow and lights stand still under Reduce motion.
+
 ## Development
 
 ```sh

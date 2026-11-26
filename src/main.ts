@@ -11,6 +11,7 @@ import { PLAN_EVENT, closeEditorWindows, closeFrontDialog, type PlanRequest } fr
 import { openImportDialog, type ImportRequest } from "./importDialog";
 import { initSystemColors } from "./systemColors";
 import { initWindowChrome } from "./windowChrome";
+import { initChristmas } from "./christmas";
 import { initSidebar, refreshCommits, refreshUncommitted, resetCommits, showFiles } from "./sidebar";
 import { initFileFind } from "./fileFind";
 import { createTextFind } from "./textFind";
@@ -1055,6 +1056,7 @@ document.querySelectorAll<HTMLElement>("[data-icon]").forEach((el) => {
 
 initSystemColors();
 void initWindowChrome();
+initChristmas();
 initSidebar(
   (dir) => requestPlan(dir),
   (dir) => requestPlan(dir, true),
