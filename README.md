@@ -84,6 +84,13 @@ files for that reason: `main.rs`, `app.rs` (the Tauri builder),
 what may be deleted is checked in `delete.rs`) and `src/probes/` (manual `#[ignore]`
 checks against real repos). New logic belongs elsewhere, under test.
 
+To install a build on macOS, run `scripts/install-mac.sh` from the repo root
+(or pass the path of a `.app`). Copying over the old app with `ditto` or `cp`
+often leaves Finder and the Dock showing the old icon. The script swaps the
+new bundle in and re-registers it with LaunchServices. If Gestalt is kept in
+the Dock, it also restarts the Dock. It quits and reopens Gestalt if it was
+running, and uses `sudo` only when `/Applications` isn't writable by you.
+
 ### Code signing (macOS)
 
 `pnpm tauri build` makes an unsigned app, which Gatekeeper blocks on other
