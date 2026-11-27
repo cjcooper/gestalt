@@ -70,6 +70,7 @@ pnpm tauri dev
 pnpm test               # frontend (Vitest)
 pnpm test:rust          # backend (cargo test)
 pnpm tauri build        # .app / .dmg in src-tauri/target/release/bundle
+pnpm clean:rust         # cargo clean: wipe src-tauri/target
 ```
 
 ### Coverage
